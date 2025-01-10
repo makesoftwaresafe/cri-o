@@ -166,6 +166,10 @@ int main(int argc, char **argv) {
     if (unshare(unshare_flags) < 0) {
       pexit("Failed to unshare namespaces");
     }
+
+    if (sysctls_count != 0 && configure_sysctls(sysctls, sysctls_count) < 0) {
+      pexit("Failed to configure sysctls after unshare");
+    }
   } else {
     /* if we create a user or mount namespace, we need a new process. */
     if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, p))
@@ -204,6 +208,10 @@ int main(int argc, char **argv) {
       if (unshare(unshare_flags & ~CLONE_NEWUSER) < 0)
         pexit("Failed to unshare namespaces");
 
+      if (sysctls_count != 0 && configure_sysctls(sysctls, sysctls_count) < 0) {
+        pexit("Failed to configure sysctls after unshare");
+      }
+
       /* Notify that the namespaces are created.  */
       if (TEMP_FAILURE_RETRY(write(p[1], "0", 1)) < 0)
         pexit("Failed to write on sync pipe");
@@ -227,10 +235,10 @@ int main(int argc, char **argv) {
 
       /* Write user mappings */
       if (gid_mapping && write_mapping_file(pid, gid_mapping, true) < 0)
-        pexit("Cannot write gid mappings");
+        pexitf("Cannot write gid mappings: %s", gid_mapping);
 
       if (uid_mapping && write_mapping_file(pid, uid_mapping, false) < 0)
-        pexit("Cannot write gid mappings");
+        pexitf("Cannot write uid mappings: %s", uid_mapping);
 
       /* Notify that the mappings were written.  */
       if (TEMP_FAILURE_RETRY(write(p[0], "0", 1)) < 0)
@@ -243,10 +251,6 @@ int main(int argc, char **argv) {
       pexit("Failed to read from the sync pipe");
 
     close(p[0]);
-  }
-
-  if (sysctls_count != 0 && configure_sysctls(sysctls, sysctls_count) < 0) {
-    pexit("Failed to configure sysctls after unshare");
   }
 
   if (bind_user) {
@@ -301,9 +305,9 @@ static bool is_host_ns(const char* const optarg) {
   return optarg && !strcmp (optarg, HOSTNS);
 }
 
-/* Mount namespaces can only be bound into unsharable mount namespaces (to
+/* Mount namespaces can only be bound into unshareable mount namespaces (to
  * avoid infinite loops), so force the pin_path to be a bind-mount to
- * itself and then marked as unsharable. */
+ * itself and then marked as unshareable. */
 static int setup_unbindable_bindpath(const char *pin_path, const char *ns_name) {
   char bind_root[PATH_MAX];
 
@@ -321,7 +325,7 @@ static int setup_unbindable_bindpath(const char *pin_path, const char *ns_name) 
 
   // Now that bind_root is definitely a mountpoint, set it to be UNBINDABLE (idempotent-safe)
   if (mount(NULL, bind_root, NULL, MS_UNBINDABLE, NULL) < 0) {
-    pwarnf("Could not make %s an unsharable mountpoint", bind_root);
+    pwarnf("Could not make %s an unshareable mountpoint", bind_root);
     return -1;
   }
   return 0;

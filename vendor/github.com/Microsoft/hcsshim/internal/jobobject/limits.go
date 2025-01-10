@@ -1,3 +1,5 @@
+//go:build windows
+
 package jobobject
 
 import (
@@ -141,6 +143,13 @@ func (job *JobObject) SetCPUAffinity(affinityBitMask uint64) error {
 		return err
 	}
 	info.BasicLimitInformation.LimitFlags |= uint32(windows.JOB_OBJECT_LIMIT_AFFINITY)
+
+	// We really, really shouldn't be running on 32 bit, but just in case (and to satisfy CodeQL) ...
+	const maxUintptr = ^uintptr(0)
+	if affinityBitMask > uint64(maxUintptr) {
+		return fmt.Errorf("affinity bitmask (%d) exceeds max allowable value (%d)", affinityBitMask, maxUintptr)
+	}
+
 	info.BasicLimitInformation.Affinity = uintptr(affinityBitMask)
 	return job.setExtendedInformation(info)
 }
@@ -202,7 +211,7 @@ func (job *JobObject) getExtendedInformation() (*windows.JOBOBJECT_EXTENDED_LIMI
 	if err := winapi.QueryInformationJobObject(
 		job.handle,
 		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)),
+		unsafe.Pointer(&info),
 		uint32(unsafe.Sizeof(info)),
 		nil,
 	); err != nil {
@@ -224,7 +233,7 @@ func (job *JobObject) getCPURateControlInformation() (*winapi.JOBOBJECT_CPU_RATE
 	if err := winapi.QueryInformationJobObject(
 		job.handle,
 		windows.JobObjectCpuRateControlInformation,
-		uintptr(unsafe.Pointer(&info)),
+		unsafe.Pointer(&info),
 		uint32(unsafe.Sizeof(info)),
 		nil,
 	); err != nil {

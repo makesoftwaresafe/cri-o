@@ -3,14 +3,15 @@ package server_test
 import (
 	"context"
 
-	"github.com/cri-o/cri-o/internal/oci"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/oci"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ContainerList", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -38,7 +39,7 @@ var _ = t.Describe("ContainerList", func() {
 				&types.ListContainersRequest{Filter: &types.ContainerFilter{}})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 			if created {
 				Expect(len(response.Containers)).To(BeEquivalentTo(1))
@@ -74,7 +75,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(0))
 			})
@@ -88,7 +89,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(1))
 			})
@@ -103,7 +104,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(0))
 			})
@@ -118,7 +119,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(1))
 			})
@@ -132,7 +133,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(1))
 			})
@@ -148,7 +149,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(0))
 			})
@@ -162,7 +163,7 @@ var _ = t.Describe("ContainerList", func() {
 					}})
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(response).NotTo(BeNil())
 				Expect(len(response.Containers)).To(BeEquivalentTo(0))
 			})

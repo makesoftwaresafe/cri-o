@@ -1,5 +1,4 @@
-//go:build !linux
-// +build !linux
+//go:build !linux && !freebsd
 
 package server
 
@@ -7,9 +6,9 @@ import (
 	"context"
 	"fmt"
 
-	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	"github.com/cri-o/cri-o/internal/lib/sandbox"
 )
 
-func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRequest) error {
+func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error {
 	return fmt.Errorf("unsupported")
 }

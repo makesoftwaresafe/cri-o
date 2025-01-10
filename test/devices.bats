@@ -56,20 +56,19 @@ function teardown() {
 
 	# Opening the device in read mode should fail because the device
 	# cgroup access only allows writes.
-	run crictl exec --timeout=$timeout --sync "$ctr_id" head -1 $device
-	[ "$status" -ne 0 ]
+	run ! crictl exec --timeout=$timeout --sync "$ctr_id" head -1 $device
 	[[ "$output" == *"Operation not permitted"* ]]
 
 	# The write should be allowed by the devices cgroup policy
-	run crictl exec --timeout=$timeout --sync "$ctr_id" sh -c "echo woohoo | tee $device"
-	[ "$status" -eq 0 ]
+	run -0 crictl exec --timeout=$timeout --sync "$ctr_id" sh -c "echo woohoo | tee $device"
 	# check there's no error message of any kind from tee
 	[[ "$output" == "woohoo" ]]
 }
 
 @test "annotation devices support" {
+	setup_crio
 	create_runtime_with_allowed_annotation "device" "io.kubernetes.cri-o.Devices"
-	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio
+	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio_no_setup
 
 	jq '      .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/qifoo:rwm"' \
 		"$TESTDATA"/sandbox_config.json > "$newconfig"
@@ -94,12 +93,13 @@ function teardown() {
 	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
 	crictl start "$ctr_id"
 
-	! crictl exec --sync "$ctr_id" sh -c "ls /dev/qifoo"
+	run ! crictl exec --sync "$ctr_id" sh -c "ls /dev/qifoo"
 }
 
 @test "annotation should override configured additional_devices" {
+	setup_crio
 	create_runtime_with_allowed_annotation "device" "io.kubernetes.cri-o.Devices"
-	CONTAINER_ALLOWED_DEVICES="/dev/urandom,/dev/null" CONTAINER_ADDITIONAL_DEVICES="/dev/urandom:/dev/qifoo:rwm" start_crio
+	CONTAINER_ALLOWED_DEVICES="/dev/urandom,/dev/null" CONTAINER_ADDITIONAL_DEVICES="/dev/urandom:/dev/qifoo:rwm" start_crio_no_setup
 
 	jq '      .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/qifoo:rwm"' \
 		"$TESTDATA"/sandbox_config.json > "$newconfig"
@@ -115,20 +115,22 @@ function teardown() {
 }
 
 @test "annotation should not be processed if not allowed in allowed_devices" {
+	setup_crio
 	create_runtime_with_allowed_annotation "device" "io.kubernetes.cri-o.Devices"
-	start_crio
+	start_crio_no_setup
 
 	jq '      .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/qifoo:rwm"' \
 		"$TESTDATA"/sandbox_config.json > "$newconfig"
 
 	pod_id=$(crictl runp "$newconfig")
 
-	! crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json
+	run ! crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json
 }
 
 @test "annotation should configure multiple devices" {
+	setup_crio
 	create_runtime_with_allowed_annotation "device" "io.kubernetes.cri-o.Devices"
-	CONTAINER_ALLOWED_DEVICES="/dev/urandom,/dev/null" start_crio
+	CONTAINER_ALLOWED_DEVICES="/dev/urandom,/dev/null" start_crio_no_setup
 
 	jq '      .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/qifoo:rwm,/dev/urandom:/dev/peterfoo:rwm"' \
 		"$TESTDATA"/sandbox_config.json > "$newconfig"
@@ -146,13 +148,14 @@ function teardown() {
 }
 
 @test "annotation should fail if one device is invalid" {
+	setup_crio
 	create_runtime_with_allowed_annotation "device" "io.kubernetes.cri-o.Devices"
-	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio
+	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio_no_setup
 
 	jq '      .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/qifoo:rwm,/dove/null"' \
 		"$TESTDATA"/sandbox_config.json > "$newconfig"
 
 	pod_id=$(crictl runp "$newconfig")
 
-	! crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json
+	run ! crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json
 }

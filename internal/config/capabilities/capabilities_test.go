@@ -1,12 +1,13 @@
 package capabilities_test
 
 import (
-	"github.com/cri-o/cri-o/internal/config/capabilities"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/internal/config/capabilities"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Capabilities", func() {
 	It("should succeed to validate the default capabilities", func() {
 		// Given
@@ -16,7 +17,7 @@ var _ = t.Describe("Capabilities", func() {
 		err := sut.Validate()
 
 		// Then
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should succeed to validate wrong case capabilities", func() {
@@ -27,7 +28,7 @@ var _ = t.Describe("Capabilities", func() {
 		err := sut.Validate()
 
 		// Then
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	It("should fail to validate wrong capabilities", func() {
@@ -38,6 +39,6 @@ var _ = t.Describe("Capabilities", func() {
 		err := sut.Validate()
 
 		// Then
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 	})
 })

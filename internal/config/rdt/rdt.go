@@ -4,17 +4,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pkg/errors"
+	"github.com/intel/goresctrl/pkg/rdt"
 	"github.com/sirupsen/logrus"
 	"sigs.k8s.io/yaml"
-
-	"github.com/intel/goresctrl/pkg/rdt"
 )
 
 const (
-	// DefaultRdtConfigFile is the default value for RDT config file path
+	// DefaultRdtConfigFile is the default value for RDT config file path.
 	DefaultRdtConfigFile = ""
-	// ResctrlPrefix is the prefix used for class/closid directories under the resctrl filesystem
+	// ResctrlPrefix is the prefix used for class/closid directories under the resctrl filesystem.
 	ResctrlPrefix = ""
 )
 
@@ -24,7 +22,7 @@ type Config struct {
 	config    *rdt.Config
 }
 
-// New creates a new RDT config instance
+// New creates a new RDT config instance.
 func New() *Config {
 	c := &Config{
 		supported: true,
@@ -39,17 +37,17 @@ func New() *Config {
 	return c
 }
 
-// Supported returns true if RDT is enabled in the host system
+// Supported returns true if RDT is enabled in the host system.
 func (c *Config) Supported() bool {
 	return c.supported
 }
 
-// Enabled returns true if RDT is enabled in CRI-O
+// Enabled returns true if RDT is enabled in CRI-O.
 func (c *Config) Enabled() bool {
 	return c.enabled
 }
 
-// Load loads and validates RDT config
+// Load loads and validates RDT config.
 func (c *Config) Load(path string) error {
 	c.enabled = false
 
@@ -69,7 +67,7 @@ func (c *Config) Load(path string) error {
 	}
 
 	if err := rdt.SetConfig(tmpCfg, true); err != nil {
-		return errors.Wrap(err, "configuring RDT failed")
+		return fmt.Errorf("configuring RDT failed: %w", err)
 	}
 
 	logrus.Infof("RDT enabled, config successfully loaded from %q", path)
@@ -82,12 +80,12 @@ func (c *Config) Load(path string) error {
 func loadConfigFile(path string) (*rdt.Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, errors.Wrap(err, "reading rdt config file failed")
+		return nil, fmt.Errorf("reading rdt config file failed: %w", err)
 	}
 
 	c := &rdt.Config{}
 	if err = yaml.Unmarshal(data, c); err != nil {
-		return nil, errors.Wrap(err, "parsing RDT config failed")
+		return nil, fmt.Errorf("parsing RDT config failed: %w", err)
 	}
 
 	return c, nil

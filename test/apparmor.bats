@@ -17,8 +17,10 @@ function teardown() {
 	load_a_specific_apparmor_profile_as_default_apparmor_and_run_a_container_with_it
 	load_default_apparmor_profile_and_run_a_container_with_another_apparmor_profile
 	run_a_container_with_wrong_apparmor_profile_name
+	run_a_container_after_unloading_default_apparmor_profile_new_field
 	run_a_container_after_unloading_default_apparmor_profile
 	run_a_container_with_invalid_localhost_apparmor_profile_name
+	run_a_container_with_unconfined_apparmor_profile_name
 }
 
 # 1. test running with loading the default apparmor profile.
@@ -58,7 +60,6 @@ load_a_specific_apparmor_profile_as_default_apparmor_and_run_a_container_with_it
 	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/apparmor_container2.json "$TESTDIR"/apparmor2.json)
 
 	run crictl exec --sync "$ctr_id" touch test.txt
-	echo "$output"
 	[[ "$output" == *"Permission denied"* ]]
 
 	remove_apparmor_profile "$APPARMOR_TEST_PROFILE_PATH"
@@ -84,7 +85,6 @@ load_default_apparmor_profile_and_run_a_container_with_another_apparmor_profile(
 	ctr_id=$(crictl create "$pod_id" "$TESTDIR"/apparmor_container3.json "$TESTDIR"/apparmor3.json)
 
 	run crictl exec --sync "$ctr_id" touch test.txt
-	echo "$output"
 	[[ "$output" == *"Permission denied"* ]]
 
 	remove_apparmor_profile "$APPARMOR_TEST_PROFILE_PATH"
@@ -107,12 +107,34 @@ run_a_container_with_wrong_apparmor_profile_name() {
 
 	pod_id=$(crictl runp "$TESTDIR"/apparmor4.json)
 
-	! crictl create "$pod_id" "$TESTDIR"/apparmor_container4.json "$TESTDIR"/apparmor4.json
+	run ! crictl create "$pod_id" "$TESTDIR"/apparmor_container4.json "$TESTDIR"/apparmor4.json
 
 	cleanup_test
 }
 
-# 5. test running with default apparmor profile unloaded.
+# 5. test running with default apparmor profile new field used.
+# test that we will fail when running a ctr with wrong apparmor profile name.
+run_a_container_after_unloading_default_apparmor_profile_new_field() {
+	local output status
+
+	load_apparmor_profile "$FAKE_CRIO_DEFAULT_PROFILE_PATH"
+	setup_test
+	start_crio "$FAKE_CRIO_DEFAULT_PROFILE_NAME"
+	remove_apparmor_profile "$FAKE_CRIO_DEFAULT_PROFILE_PATH"
+
+	jq '	  .linux.security_context.apparmor.profile_type = 0 | .linux.security_context.apparmor.localhost_ref = "runtime/default"' \
+		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/apparmor5.json
+	jq '	  .linux.security_context.apparmor.profile_type = 0 | .linux.security_context.apparmor.localhost_ref = "runtime/default"' \
+		"$TESTDATA"/container_redis.json > "$TESTDIR"/apparmor_container5.json
+
+	pod_id=$(crictl runp "$TESTDIR"/apparmor5.json)
+
+	run ! crictl create "$pod_id" "$TESTDIR"/apparmor_container5.json "$TESTDIR"/apparmor5.json
+
+	cleanup_test
+}
+
+# 6. test running with default apparmor profile unloaded.
 # test that we will fail when running a ctr with wrong apparmor profile name.
 run_a_container_after_unloading_default_apparmor_profile() {
 	local output status
@@ -129,12 +151,12 @@ run_a_container_after_unloading_default_apparmor_profile() {
 
 	pod_id=$(crictl runp "$TESTDIR"/apparmor5.json)
 
-	crictl create "$pod_id" "$TESTDIR"/apparmor_container5.json "$TESTDIR"/apparmor5.json && fail
+	run ! crictl create "$pod_id" "$TESTDIR"/apparmor_container5.json "$TESTDIR"/apparmor5.json
 
 	cleanup_test
 }
 
-# 6. test running with empty localhost profile name.
+# 7. test running with empty localhost profile name.
 run_a_container_with_invalid_localhost_apparmor_profile_name() {
 	local output status
 
@@ -149,7 +171,30 @@ run_a_container_with_invalid_localhost_apparmor_profile_name() {
 
 	pod_id=$(crictl runp "$TESTDIR"/apparmor4.json)
 
-	! crictl create "$pod_id" "$TESTDIR"/apparmor_container4.json "$TESTDIR"/apparmor4.json
+	run ! crictl create "$pod_id" "$TESTDIR"/apparmor_container4.json "$TESTDIR"/apparmor4.json
+
+	cleanup_test
+}
+
+# 8. test running with unconfined profile name. unconfined means no apparmor enforcement.
+run_a_container_with_unconfined_apparmor_profile_name() {
+	local output status
+
+	setup_test
+	start_crio
+
+	# Disable the feature for the sandbox or the container
+	# appArmorProfile.type="unconfined"
+	jq '.linux.security_context.apparmor.profile_type = 1' \
+		"$TESTDATA"/sandbox_config.json > "$TESTDIR"/apparmor4.json
+
+	# appArmorProfile.type="unconfined"
+	jq '.linux.security_context.apparmor.profile_type = 1' \
+		"$TESTDATA"/container_redis.json > "$TESTDIR"/apparmor_container4.json
+
+	pod_id=$(crictl runp "$TESTDIR"/apparmor4.json)
+
+	crictl create "$pod_id" "$TESTDIR"/apparmor_container4.json "$TESTDIR"/apparmor4.json
 
 	cleanup_test
 }

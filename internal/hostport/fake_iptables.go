@@ -18,13 +18,15 @@ package hostport
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
-	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
+	utilnet "k8s.io/utils/net"
+
+	utiliptables "github.com/cri-o/cri-o/internal/iptables"
 )
 
 type fakeChain struct {
@@ -39,17 +41,17 @@ type fakeTable struct {
 
 type fakeIPTables struct {
 	tables        map[string]*fakeTable
-	builtinChains map[string]sets.String
+	builtinChains map[string]sets.Set[string]
 	protocol      utiliptables.Protocol
 }
 
 func newFakeIPTables() *fakeIPTables {
 	return &fakeIPTables{
 		tables: make(map[string]*fakeTable),
-		builtinChains: map[string]sets.String{
-			string(utiliptables.TableFilter): sets.NewString("INPUT", "FORWARD", "OUTPUT"),
-			string(utiliptables.TableNAT):    sets.NewString("PREROUTING", "INPUT", "OUTPUT", "POSTROUTING"),
-			string(utiliptables.TableMangle): sets.NewString("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
+		builtinChains: map[string]sets.Set[string]{
+			string(utiliptables.TableFilter): sets.New("INPUT", "FORWARD", "OUTPUT"),
+			string(utiliptables.TableNAT):    sets.New("PREROUTING", "INPUT", "OUTPUT", "POSTROUTING"),
+			string(utiliptables.TableMangle): sets.New("PREROUTING", "INPUT", "FORWARD", "OUTPUT", "POSTROUTING"),
 		},
 		protocol: utiliptables.ProtocolIPv4,
 	}
@@ -129,7 +131,7 @@ func (f *fakeIPTables) ChainExists(tableName utiliptables.Table, chainName utili
 	return true, nil
 }
 
-// Returns index of rule in array; < 0 if rule is not found
+// Returns index of rule in array; < 0 if rule is not found.
 func findRule(chain *fakeChain, rule string) int {
 	for i, candidate := range chain.rules {
 		if rule == candidate {
@@ -178,7 +180,7 @@ func normalizeRule(rule string) (string, error) {
 		if remaining[0] == '"' {
 			end = strings.Index(remaining[1:], "\"")
 			if end < 0 {
-				return "", fmt.Errorf("invalid rule syntax: mismatched quotes")
+				return "", errors.New("invalid rule syntax: mismatched quotes")
 			}
 			end += 2
 		} else {
@@ -190,11 +192,16 @@ func normalizeRule(rule string) (string, error) {
 		arg := remaining[:end]
 
 		// Normalize un-prefixed IP addresses like iptables does
-		if net.ParseIP(arg) != nil {
+		switch utilnet.IPFamilyOfString(arg) {
+		case utilnet.IPv4:
 			arg += "/32"
+		case utilnet.IPv6:
+			arg += "/128"
+		default:
+			// Not an IP, presumably already a CIDR, so don't change
 		}
 
-		if len(normalized) > 0 {
+		if normalized != "" {
 			normalized += " "
 		}
 		normalized += strings.TrimSpace(arg)
@@ -239,10 +246,10 @@ func (f *fakeIPTables) Protocol() utiliptables.Protocol {
 	return f.protocol
 }
 
-// nolint:interfacer
+//nolint:interfacer
 func saveChain(chain *fakeChain, data *bytes.Buffer) {
 	for _, rule := range chain.rules {
-		data.WriteString(fmt.Sprintf("-A %s %s\n", chain.name, rule))
+		fmt.Fprintf(data, "-A %s %s\n", chain.name, rule)
 	}
 }
 
@@ -252,11 +259,11 @@ func (f *fakeIPTables) SaveInto(tableName utiliptables.Table, buffer *bytes.Buff
 		return err
 	}
 
-	buffer.WriteString(fmt.Sprintf("*%s\n", table.name))
+	fmt.Fprintf(buffer, "*%s\n", table.name)
 
 	rules := bytes.NewBuffer(nil)
 	for _, chain := range table.chains {
-		buffer.WriteString(fmt.Sprintf(":%s - [0:0]\n", string(chain.name)))
+		fmt.Fprintf(buffer, ":%s - [0:0]\n", string(chain.name))
 		saveChain(chain, rules)
 	}
 	buffer.Write(rules.Bytes())
@@ -285,7 +292,7 @@ func (f *fakeIPTables) restore(restoreTableName utiliptables.Table, data []byte,
 			if restoreTableName != "" && restoreTableName != tableName {
 				continue
 			}
-			// nolint:gocritic // using a switch statement is not much different
+			//nolint:gocritic // using a switch statement is not much different
 			if strings.HasPrefix(line, ":") {
 				chainName := utiliptables.Chain(strings.Split(line[1:], " ")[0])
 				if flush == utiliptables.FlushTables {

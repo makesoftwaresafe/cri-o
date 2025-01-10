@@ -1,15 +1,16 @@
 package resourcestore_test
 
 import (
+	"context"
 	"errors"
 
-	"github.com/cri-o/cri-o/internal/resourcestore"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"golang.org/x/net/context"
+
+	"github.com/cri-o/cri-o/internal/resourcestore"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ResourceCleaner", func() {
 	It("should call the cleanup functions", func() {
 		// Given
@@ -29,7 +30,7 @@ var _ = t.Describe("ResourceCleaner", func() {
 		err := sut.Cleanup()
 
 		// Then
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(called1).To(BeTrue())
 		Expect(called2).To(BeTrue())
 	})
@@ -57,7 +58,7 @@ var _ = t.Describe("ResourceCleaner", func() {
 		err := sut.Cleanup()
 
 		// Then
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(called1).To(BeTrue())
 		Expect(called2).To(BeTrue())
 		Expect(failureCnt).To(Equal(2))
@@ -76,7 +77,7 @@ var _ = t.Describe("ResourceCleaner", func() {
 		err := sut.Cleanup()
 
 		// Then
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 		Expect(failureCnt).To(Equal(3))
 	})
 })

@@ -3,12 +3,13 @@ package server_test
 import (
 	"os"
 
-	"github.com/cri-o/cri-o/server"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/server"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Listen", func() {
 	t.Describe("Listen", func() {
 		It("should succeed", func() {
@@ -19,7 +20,7 @@ var _ = t.Describe("Listen", func() {
 			listener, err := server.Listen("unix", "address")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(listener).NotTo(BeNil())
 		})
 
@@ -27,14 +28,14 @@ var _ = t.Describe("Listen", func() {
 			// Given
 			defer os.Remove("address")
 			listener, err := server.Listen("unix", "address")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(listener).NotTo(BeNil())
 
 			// When
 			listener, err = server.Listen("unix", "address")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(listener).To(BeNil())
 		})
 	})

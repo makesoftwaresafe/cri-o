@@ -1,16 +1,22 @@
 package capnp
 
 import (
-	"bytes"
-	"fmt"
+	"errors"
 	"math"
 	"strconv"
 
+	"capnproto.org/go/capnp/v3/exc"
+	"capnproto.org/go/capnp/v3/internal/str"
 	"capnproto.org/go/capnp/v3/internal/strquote"
 )
 
 // A List is a reference to an array of values.
-type List struct {
+type List ListKind
+
+// The underlying type of List. We expose this so that
+// we can use ~ListKind as a constraint in generics to
+// capture any list type.
+type ListKind = struct {
 	seg        *Segment
 	off        address    // at beginning of elements (past composite list tag word)
 	length     int32      // always [0, 1<<29)
@@ -22,14 +28,14 @@ type List struct {
 // newPrimitiveList allocates a new list of primitive values, preferring placement in s.
 func newPrimitiveList(s *Segment, sz Size, n int32) (List, error) {
 	if n < 0 || n >= 1<<29 {
-		return List{}, errorf("new list: length out of range")
+		return List{}, errors.New("new list: length out of range")
 	}
 	// sz is [0, 8] and n is [0, 1<<29).
 	// Range is [0, maxSegmentSize], thus there will never be overflow.
 	total := sz.timesUnchecked(n)
 	s, addr, err := alloc(s, total)
 	if err != nil {
-		return List{}, annotatef(err, "new list")
+		return List{}, exc.WrapError("new list", err)
 	}
 	return List{
 		seg:        s,
@@ -44,19 +50,19 @@ func newPrimitiveList(s *Segment, sz Size, n int32) (List, error) {
 // in s.
 func NewCompositeList(s *Segment, sz ObjectSize, n int32) (List, error) {
 	if !sz.isValid() {
-		return List{}, errorf("new composite list: invalid element size")
+		return List{}, errors.New("new composite list: invalid element size")
 	}
 	if n < 0 || n >= 1<<29 {
-		return List{}, errorf("new composite list: length out of range")
+		return List{}, errors.New("new composite list: length out of range")
 	}
 	sz.DataSize = sz.DataSize.padToWord()
 	total, ok := sz.totalSize().times(n)
 	if !ok || total > maxSegmentSize-wordSize {
-		return List{}, errorf("new composite list: size overflow")
+		return List{}, errors.New("new composite list: size overflow")
 	}
 	s, addr, err := alloc(s, wordSize+total)
 	if err != nil {
-		return List{}, annotatef(err, "new composite list")
+		return List{}, exc.WrapError("new composite list", err)
 	}
 	// Add tag word
 	s.writeRawPointer(addr, rawStructPointer(pointerOffset(n), sz))
@@ -183,12 +189,17 @@ func (p List) primitiveElem(i int, expectedSize ObjectSize) (address, error) {
 		// This is programmer error, not input error.
 		panic("list element out of bounds")
 	}
-	if p.flags&isBitList != 0 || p.flags&isCompositeList == 0 && p.size != expectedSize || p.flags&isCompositeList != 0 && (p.size.DataSize < expectedSize.DataSize || p.size.PointerCount < expectedSize.PointerCount) {
-		return 0, errorf("mismatched list element size")
+	if p.flags&isBitList != 0 ||
+		p.flags&isCompositeList == 0 && p.size != expectedSize ||
+		p.flags&isCompositeList != 0 &&
+			(p.size.DataSize < expectedSize.DataSize ||
+				p.size.PointerCount < expectedSize.PointerCount) {
+
+		return 0, errors.New("mismatched list element size")
 	}
 	addr, ok := p.off.element(int32(i), p.size.totalSize())
 	if !ok {
-		return 0, errorf("read list element %d: address overflow", i)
+		return 0, errors.New("read list element " + str.Itod(i) + ": address overflow")
 	}
 	return addr, nil
 }
@@ -218,33 +229,44 @@ func (p List) Struct(i int) Struct {
 // SetStruct set the i'th element to the value in s.
 func (p List) SetStruct(i int, s Struct) error {
 	if p.flags&isBitList != 0 {
-		return errorf("SetStruct called on bit list")
+		return errors.New("SetStruct called on bit list")
 	}
 	if err := copyStruct(p.Struct(i), s); err != nil {
-		return annotatef(err, "set list element %d", i)
+		return exc.WrapError("set list element "+str.Itod(i), err)
 	}
 	return nil
 }
 
+// l.EncodeAsPtr is equivalent to l.ToPtr(); for implementing TypeParam.
+// The segment argument is ignored.
+func (l List) EncodeAsPtr(*Segment) Ptr { return l.ToPtr() }
+
+// DecodeFromPtr(p) is equivalent to p.List; for implementing TypeParam.
+func (List) DecodeFromPtr(p Ptr) List { return p.List() }
+
+var _ TypeParam[List] = List{}
+
 // A BitList is a reference to a list of booleans.
-type BitList struct{ List }
+type BitList List
+
+var _ TypeParam[BitList] = BitList{}
 
 // NewBitList creates a new bit list, preferring placement in s.
 func NewBitList(s *Segment, n int32) (BitList, error) {
 	if n < 0 || n >= 1<<29 {
-		return BitList{}, errorf("new bit list: length out of range")
+		return BitList{}, errors.New("new bit list: length out of range")
 	}
 	s, addr, err := alloc(s, bitListSize(n))
 	if err != nil {
-		return BitList{}, annotatef(err, "new %d-element bit list", n)
+		return BitList{}, exc.WrapError("new "+str.Itod(n)+"-element bit list", err)
 	}
-	return BitList{List{
+	return BitList{
 		seg:        s,
 		off:        addr,
 		length:     n,
 		flags:      isBitList,
 		depthLimit: maxDepth,
-	}}, nil
+	}, nil
 }
 
 // bitListSize returns the number of bytes needed for a bit list with n
@@ -306,25 +328,27 @@ func (p BitList) String() string {
 }
 
 // A PointerList is a reference to an array of pointers.
-type PointerList struct{ List }
+type PointerList List
+
+var _ TypeParam[PointerList] = PointerList{}
 
 // NewPointerList allocates a new list of pointers, preferring placement in s.
 func NewPointerList(s *Segment, n int32) (PointerList, error) {
 	total, ok := wordSize.times(n)
 	if !ok {
-		return PointerList{}, errorf("new pointer list: size overflow")
+		return PointerList{}, errors.New("new pointer list: size overflow")
 	}
 	s, addr, err := alloc(s, total)
 	if err != nil {
-		return PointerList{}, annotatef(err, "new %d-element pointer list", n)
+		return PointerList{}, exc.WrapError("new "+str.Itod(n)+"-element pointer list", err)
 	}
-	return PointerList{List{
+	return PointerList{
 		seg:        s,
 		off:        addr,
 		length:     n,
 		size:       ObjectSize{PointerCount: 1},
 		depthLimit: maxDepth,
-	}}, nil
+	}, nil
 }
 
 // At returns the i'th pointer in the list.
@@ -333,6 +357,7 @@ func (p PointerList) At(i int) (Ptr, error) {
 	if err != nil {
 		return Ptr{}, err
 	}
+	addr += address(p.size.DataSize)
 	return p.seg.readPtr(addr, p.depthLimit)
 }
 
@@ -346,7 +371,9 @@ func (p PointerList) Set(i int, v Ptr) error {
 }
 
 // TextList is an array of pointers to strings.
-type TextList struct{ List }
+type TextList List
+
+var _ TypeParam[TextList] = TextList{}
 
 // NewTextList allocates a new list of text pointers, preferring placement in s.
 func NewTextList(s *Segment, n int32) (TextList, error) {
@@ -397,7 +424,7 @@ func (l TextList) Set(i int, v string) error {
 	if err != nil {
 		return err
 	}
-	return l.seg.writePtr(addr, p.List.ToPtr(), false)
+	return l.seg.writePtr(addr, p.ToPtr(), false)
 }
 
 // String returns the list in Cap'n Proto schema format (e.g. `["foo", "bar"]`).
@@ -420,7 +447,9 @@ func (l TextList) String() string {
 }
 
 // DataList is an array of pointers to data.
-type DataList struct{ List }
+type DataList List
+
+var _ TypeParam[DataList] = DataList{}
 
 // NewDataList allocates a new list of data pointers, preferring placement in s.
 func NewDataList(s *Segment, n int32) (DataList, error) {
@@ -457,7 +486,7 @@ func (l DataList) Set(i int, v []byte) error {
 	if err != nil {
 		return err
 	}
-	return l.seg.writePtr(addr, p.List.ToPtr(), false)
+	return l.seg.writePtr(addr, p.ToPtr(), false)
 }
 
 // String returns the list in Cap'n Proto schema format (e.g. `["foo", "bar"]`).
@@ -480,7 +509,9 @@ func (l DataList) String() string {
 }
 
 // A VoidList is a list of zero-sized elements.
-type VoidList struct{ List }
+type VoidList List
+
+var _ TypeParam[VoidList] = VoidList{}
 
 // NewVoidList creates a list of voids.  No allocation is performed;
 // s is only used for Segment()'s return value.
@@ -488,11 +519,11 @@ func NewVoidList(s *Segment, n int32) VoidList {
 	if n < 0 || n >= 1<<29 {
 		panic("list length overflow")
 	}
-	return VoidList{List{
+	return VoidList{
 		seg:        s,
 		length:     n,
 		depthLimit: maxDepth,
-	}}
+	}
 }
 
 // String returns the list in Cap'n Proto schema format (e.g. "[void, void, void]").
@@ -510,7 +541,9 @@ func (l VoidList) String() string {
 }
 
 // A UInt8List is an array of UInt8 values.
-type UInt8List struct{ List }
+type UInt8List List
+
+var _ TypeParam[UInt8List] = UInt8List{}
 
 // NewUInt8List creates a new list of UInt8, preferring placement in s.
 func NewUInt8List(s *Segment, n int32) (UInt8List, error) {
@@ -518,7 +551,7 @@ func NewUInt8List(s *Segment, n int32) (UInt8List, error) {
 	if err != nil {
 		return UInt8List{}, err
 	}
-	return UInt8List{l}, nil
+	return UInt8List(l), nil
 }
 
 // NewText creates a new list of UInt8 from a string.
@@ -591,7 +624,9 @@ func (l UInt8List) String() string {
 }
 
 // Int8List is an array of Int8 values.
-type Int8List struct{ List }
+type Int8List List
+
+var _ TypeParam[Int8List] = Int8List{}
 
 // NewInt8List creates a new list of Int8, preferring placement in s.
 func NewInt8List(s *Segment, n int32) (Int8List, error) {
@@ -599,7 +634,7 @@ func NewInt8List(s *Segment, n int32) (Int8List, error) {
 	if err != nil {
 		return Int8List{}, err
 	}
-	return Int8List{l}, nil
+	return Int8List(l), nil
 }
 
 // At returns the i'th element.
@@ -635,7 +670,9 @@ func (l Int8List) String() string {
 }
 
 // A UInt16List is an array of UInt16 values.
-type UInt16List struct{ List }
+type UInt16List List
+
+var _ TypeParam[UInt16List] = UInt16List{}
 
 // NewUInt16List creates a new list of UInt16, preferring placement in s.
 func NewUInt16List(s *Segment, n int32) (UInt16List, error) {
@@ -643,7 +680,7 @@ func NewUInt16List(s *Segment, n int32) (UInt16List, error) {
 	if err != nil {
 		return UInt16List{}, err
 	}
-	return UInt16List{l}, nil
+	return UInt16List(l), nil
 }
 
 // At returns the i'th element.
@@ -679,7 +716,9 @@ func (l UInt16List) String() string {
 }
 
 // Int16List is an array of Int16 values.
-type Int16List struct{ List }
+type Int16List List
+
+var _ TypeParam[Int16List] = Int16List{}
 
 // NewInt16List creates a new list of Int16, preferring placement in s.
 func NewInt16List(s *Segment, n int32) (Int16List, error) {
@@ -687,7 +726,7 @@ func NewInt16List(s *Segment, n int32) (Int16List, error) {
 	if err != nil {
 		return Int16List{}, err
 	}
-	return Int16List{l}, nil
+	return Int16List(l), nil
 }
 
 // At returns the i'th element.
@@ -723,7 +762,9 @@ func (l Int16List) String() string {
 }
 
 // UInt32List is an array of UInt32 values.
-type UInt32List struct{ List }
+type UInt32List List
+
+var _ TypeParam[UInt32List] = UInt32List{}
 
 // NewUInt32List creates a new list of UInt32, preferring placement in s.
 func NewUInt32List(s *Segment, n int32) (UInt32List, error) {
@@ -731,7 +772,7 @@ func NewUInt32List(s *Segment, n int32) (UInt32List, error) {
 	if err != nil {
 		return UInt32List{}, err
 	}
-	return UInt32List{l}, nil
+	return UInt32List(l), nil
 }
 
 // At returns the i'th element.
@@ -767,7 +808,9 @@ func (l UInt32List) String() string {
 }
 
 // Int32List is an array of Int32 values.
-type Int32List struct{ List }
+type Int32List List
+
+var _ TypeParam[Int32List] = Int32List{}
 
 // NewInt32List creates a new list of Int32, preferring placement in s.
 func NewInt32List(s *Segment, n int32) (Int32List, error) {
@@ -775,7 +818,7 @@ func NewInt32List(s *Segment, n int32) (Int32List, error) {
 	if err != nil {
 		return Int32List{}, err
 	}
-	return Int32List{l}, nil
+	return Int32List(l), nil
 }
 
 // At returns the i'th element.
@@ -811,7 +854,9 @@ func (l Int32List) String() string {
 }
 
 // UInt64List is an array of UInt64 values.
-type UInt64List struct{ List }
+type UInt64List List
+
+var _ TypeParam[UInt64List] = UInt64List{}
 
 // NewUInt64List creates a new list of UInt64, preferring placement in s.
 func NewUInt64List(s *Segment, n int32) (UInt64List, error) {
@@ -819,7 +864,7 @@ func NewUInt64List(s *Segment, n int32) (UInt64List, error) {
 	if err != nil {
 		return UInt64List{}, err
 	}
-	return UInt64List{l}, nil
+	return UInt64List(l), nil
 }
 
 // At returns the i'th element.
@@ -855,7 +900,9 @@ func (l UInt64List) String() string {
 }
 
 // Int64List is an array of Int64 values.
-type Int64List struct{ List }
+type Int64List List
+
+var _ TypeParam[Int64List] = Int64List{}
 
 // NewInt64List creates a new list of Int64, preferring placement in s.
 func NewInt64List(s *Segment, n int32) (Int64List, error) {
@@ -863,7 +910,7 @@ func NewInt64List(s *Segment, n int32) (Int64List, error) {
 	if err != nil {
 		return Int64List{}, err
 	}
-	return Int64List{l}, nil
+	return Int64List(l), nil
 }
 
 // At returns the i'th element.
@@ -899,7 +946,9 @@ func (l Int64List) String() string {
 }
 
 // Float32List is an array of Float32 values.
-type Float32List struct{ List }
+type Float32List List
+
+var _ TypeParam[Float32List] = Float32List{}
 
 // NewFloat32List creates a new list of Float32, preferring placement in s.
 func NewFloat32List(s *Segment, n int32) (Float32List, error) {
@@ -907,7 +956,7 @@ func NewFloat32List(s *Segment, n int32) (Float32List, error) {
 	if err != nil {
 		return Float32List{}, err
 	}
-	return Float32List{l}, nil
+	return Float32List(l), nil
 }
 
 // At returns the i'th element.
@@ -943,7 +992,9 @@ func (l Float32List) String() string {
 }
 
 // Float64List is an array of Float64 values.
-type Float64List struct{ List }
+type Float64List List
+
+var _ TypeParam[Float64List] = Float64List{}
 
 // NewFloat64List creates a new list of Float64, preferring placement in s.
 func NewFloat64List(s *Segment, n int32) (Float64List, error) {
@@ -951,7 +1002,7 @@ func NewFloat64List(s *Segment, n int32) (Float64List, error) {
 	if err != nil {
 		return Float64List{}, err
 	}
-	return Float64List{l}, nil
+	return Float64List(l), nil
 }
 
 // At returns the i'th element.
@@ -987,10 +1038,12 @@ func (l Float64List) String() string {
 }
 
 // A list of some Cap'n Proto enum type T.
-type EnumList[T interface{ ~uint16 }] UInt16List
+type EnumList[T ~uint16] UInt16List
+
+var _ TypeParam[EnumList[uint16]] = EnumList[uint16]{}
 
 // NewEnumList creates a new list of T, preferring placement in s.
-func NewEnumList[T interface{ ~uint16 }](s *Segment, n int32) (EnumList[T], error) {
+func NewEnumList[T ~uint16](s *Segment, n int32) (EnumList[T], error) {
 	l, err := NewUInt16List(s, n)
 	return EnumList[T](l), err
 }
@@ -1011,30 +1064,36 @@ func (l EnumList[T]) String() string {
 }
 
 // A list of some Cap'n Proto struct type T.
-type StructList[T ~struct{ Struct }] struct{ List }
+type StructList[T ~StructKind] List
+
+var _ TypeParam[StructList[Struct]] = StructList[Struct]{}
 
 // At returns the i'th element.
 func (s StructList[T]) At(i int) T {
-	return T{s.List.Struct(i)}
+	return T(List(s).Struct(i))
 }
 
 // Set sets the i'th element to v.
 func (s StructList[T]) Set(i int, v T) error {
-	return s.List.SetStruct(i, struct{ Struct }(v).Struct)
+	return List(s).SetStruct(i, Struct(v))
 }
 
-// String returns the list in Cap'n Proto schema format (e.g. "[(x = 1), (x = 2)]").
-func (s StructList[T]) String() string {
-	buf := &bytes.Buffer{}
-	buf.WriteByte('[')
-	for i := 0; i < s.Len(); i++ {
-		if i > 0 {
-			buf.WriteString(", ")
-		}
-		fmt.Fprint(buf, s.At(i))
+// A list of some Cap'n Proto capability type T.
+type CapList[T ~ClientKind] PointerList
+
+func (c CapList[T]) At(i int) (res T, err error) {
+	ptr, err := PointerList(c).At(i)
+	if err != nil {
+		return res, err
 	}
-	buf.WriteByte(']')
-	return buf.String()
+	return T(ptr.Interface().Client()), nil
+}
+
+func (c CapList[T]) Set(i int, v T) error {
+	pl := PointerList(c)
+	seg := pl.Segment()
+	capId := seg.Message().CapTable().Add(Client(v))
+	return pl.Set(i, NewInterface(seg, capId).ToPtr())
 }
 
 type listFlags uint8

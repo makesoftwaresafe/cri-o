@@ -1,126 +1,8 @@
 #!/usr/bin/env bash
 
-# Root directory of integration tests.
-INTEGRATION_ROOT=${INTEGRATION_ROOT:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")}
-
-# Test data path.
-TESTDATA="${INTEGRATION_ROOT}/testdata"
-
-# Root directory of the repository.
-CRIO_ROOT=${CRIO_ROOT:-$(
-    cd "$INTEGRATION_ROOT/.." || exit
-    pwd -P
-)}
-
-# Path to the crio binary.
-CRIO_BINARY=${CRIO_BINARY:-crio}
-CRIO_BINARY_PATH=${CRIO_BINARY_PATH:-${CRIO_ROOT}/bin/$CRIO_BINARY}
-
-# Path to the crio-status binary.
-CRIO_STATUS_BINARY_PATH=${CRIO_STATUS_BINARY_PATH:-${CRIO_ROOT}/bin/crio-status}
-
-# Path to the pinns binary
-PINNS_BINARY_PATH=${PINNS_BINARY_PATH:-${CRIO_ROOT}/bin/pinns}
-
-# Path of the crictl binary.
-CRICTL_PATH=$(command -v crictl || true)
-CRICTL_BINARY=${CRICTL_PATH:-/usr/bin/crictl}
-# Path of the conmon binary set as a variable to allow overwriting.
-CONMON_BINARY=${CONMON_BINARY:-$(command -v conmon)}
-# Cgroup for the conmon process
-CONTAINER_CONMON_CGROUP=${CONTAINER_CONMON_CGROUP:-pod}
-# Path of the default seccomp profile.
-CONTAINER_SECCOMP_PROFILE=${CONTAINER_SECCOMP_PROFILE:-${CRIO_ROOT}/vendor/github.com/containers/common/pkg/seccomp/seccomp.json}
-CONTAINER_UID_MAPPINGS=${CONTAINER_UID_MAPPINGS:-}
-CONTAINER_GID_MAPPINGS=${CONTAINER_GID_MAPPINGS:-}
-OVERRIDE_OPTIONS=${OVERRIDE_OPTIONS:-}
-# Runtime
-CONTAINER_DEFAULT_RUNTIME=${CONTAINER_DEFAULT_RUNTIME:-runc}
-RUNTIME_BINARY_PATH=$(command -v "$CONTAINER_DEFAULT_RUNTIME")
-RUNTIME_TYPE=${RUNTIME_TYPE:-oci}
-PRIVILEGED_WITHOUT_HOST_DEVICES=${PRIVILEGED_WITHOUT_HOST_DEVICES:-}
-RUNTIME_CONFIG_PATH=${RUNTIME_CONFIG_PATH:-""}
-# Path of the apparmor_parser binary.
-APPARMOR_PARSER_BINARY=${APPARMOR_PARSER_BINARY:-/sbin/apparmor_parser}
-# Path of the apparmor profile for test.
-APPARMOR_TEST_PROFILE_PATH=${APPARMOR_TEST_PROFILE_PATH:-${TESTDATA}/apparmor_test_deny_write}
-# Path of the apparmor profile for unloading crio-default.
-FAKE_CRIO_DEFAULT_PROFILE_PATH=${FAKE_CRIO_DEFAULT_PROFILE_PATH:-${TESTDATA}/fake_crio_default}
-# Name of the default apparmor profile.
-FAKE_CRIO_DEFAULT_PROFILE_NAME=${FAKE_CRIO_DEFAULT_PROFILE_NAME:-crio-default-fake}
-# Name of the apparmor profile for test.
-APPARMOR_TEST_PROFILE_NAME=${APPARMOR_TEST_PROFILE_NAME:-apparmor-test-deny-write}
-# Path of boot config.
-BOOT_CONFIG_FILE_PATH=${BOOT_CONFIG_FILE_PATH:-/boot/config-$(uname -r)}
-# Path of apparmor parameters file.
-APPARMOR_PARAMETERS_FILE_PATH=${APPARMOR_PARAMETERS_FILE_PATH:-/sys/module/apparmor/parameters/enabled}
-# Path of the copyimg binary.
-COPYIMG_BINARY=${COPYIMG_BINARY:-${CRIO_ROOT}/test/copyimg/copyimg}
-# Path of tests artifacts.
-ARTIFACTS_PATH=${ARTIFACTS_PATH:-${CRIO_ROOT}/.artifacts}
-# Path of the checkseccomp binary.
-CHECKSECCOMP_BINARY=${CHECKSECCOMP_BINARY:-${CRIO_ROOT}/test/checkseccomp/checkseccomp}
-# The default log directory where all logs will go unless directly specified by the kubelet
-DEFAULT_LOG_PATH=${DEFAULT_LOG_PATH:-/var/log/crio/pods}
-# Cgroup manager to be used
-CONTAINER_CGROUP_MANAGER=${CONTAINER_CGROUP_MANAGER:-systemd}
-# Image volumes handling
-CONTAINER_IMAGE_VOLUMES=${CONTAINER_IMAGE_VOLUMES:-mkdir}
-# Container pids limit
-CONTAINER_PIDS_LIMIT=${CONTAINER_PIDS_LIMIT:-1024}
-# Log size max limit
-CONTAINER_LOG_SIZE_MAX=${CONTAINER_LOG_SIZE_MAX:--1}
-# Stream Port
-STREAM_PORT=${STREAM_PORT:-10010}
-# Metrics Port
-CONTAINER_METRICS_PORT=${CONTAINER_METRICS_PORT:-9090}
-
-POD_IPV4_CIDR="10.88.0.0/16"
-# shellcheck disable=SC2034
-POD_IPV4_CIDR_START="10.88."
-POD_IPV4_DEF_ROUTE="0.0.0.0/0"
-
-POD_IPV6_CIDR="1100:200::/24"
-# shellcheck disable=SC2034
-POD_IPV6_CIDR_START="1100:2"
-POD_IPV6_DEF_ROUTE="1100:200::1/24"
-
-IMAGES=(
-    registry.k8s.io/pause:3.6
-    quay.io/crio/busybox:latest
-    quay.io/crio/fedora-ping:latest
-    quay.io/crio/image-volume-test:latest
-    quay.io/crio/oom:latest
-    quay.io/crio/redis:alpine
-    quay.io/crio/stderr-test:latest
-)
-
-function img2dir() {
-    local dir
-    dir=$(echo "$@" | sed -e 's|^.*/||' -e 's/:.*$//' -e 's/-/_/' -e 's/$/-image/')
-    echo "$ARTIFACTS_PATH/$dir"
-}
-
-function get_img() {
-    local img="docker://$1" dir
-    dir="$(img2dir "$img")"
-
-    if ! [ -d "$dir" ]; then
-        mkdir -p "$dir"
-        if ! "$COPYIMG_BINARY" \
-            --import-from="$img" \
-            --export-to="dir:$dir" \
-            --signature-policy="$INTEGRATION_ROOT"/policy.json; then
-            echo "Error pulling $img" >&2
-            rm -fr "$dir"
-            exit 1
-        fi
-    fi
-}
-
-for img in "${IMAGES[@]}"; do
-    get_img "$img"
-done
+. common.sh
+bats_require_minimum_version 1.9.0
+export BATS_VERBOSE_RUN=1
 
 function setup_test() {
     TESTDIR=$(mktemp -d)
@@ -155,14 +37,22 @@ function setup_test() {
     CRIO_CONFIG_DIR="$TESTDIR/crio.conf.d"
     mkdir "$CRIO_CONFIG_DIR"
     CRIO_CONFIG="$TESTDIR/crio.conf"
-    CRIO_CUSTOM_CONFIG="$CRIO_CONFIG_DIR/crio-custom.conf"
+    CRIO_CUSTOM_CONFIG="$CRIO_CONFIG_DIR/00-crio-custom.conf"
     CRIO_CNI_CONFIG="$TESTDIR/cni/net.d/"
     CRIO_LOG="$TESTDIR/crio.log"
+
+    # Override NRI socket to a testcase-specific location.
+    CRIO_NRI_CONFIG="$CRIO_CONFIG_DIR/10-crio-nri.conf"
+    NRI_SOCKET="$TESTDIR/nri.sock"
+    cat <<EOF >"$CRIO_NRI_CONFIG"
+[crio.nri]
+nri_listen = "$NRI_SOCKET"
+EOF
 
     # Copy all the CNI dependencies around to ensure encapsulated tests
     CRIO_CNI_PLUGIN="$TESTDIR/cni-bin"
     mkdir "$CRIO_CNI_PLUGIN"
-    cp /opt/cni/bin/* "$CRIO_CNI_PLUGIN"
+    cp "$CONTAINER_CNI_PLUGIN_DIR"/* "$CRIO_CNI_PLUGIN"
     cp "$INTEGRATION_ROOT"/cni_plugin_helper.bash "$CRIO_CNI_PLUGIN"
     sed -i "s;%TEST_DIR%;$TESTDIR;" "$CRIO_CNI_PLUGIN"/cni_plugin_helper.bash
 
@@ -194,7 +84,7 @@ function crio() {
 
 # Run crictl using the binary specified by $CRICTL_BINARY.
 function crictl() {
-    "$CRICTL_BINARY" -t 10m --config "$CRICTL_CONFIG_FILE" -r "unix://$CRIO_SOCKET" -i "unix://$CRIO_SOCKET" "$@"
+    "$CRICTL_BINARY" -t "$CRICTL_TIMEOUT" --config "$CRICTL_CONFIG_FILE" -r "unix://$CRIO_SOCKET" -i "unix://$CRIO_SOCKET" "$@"
 }
 
 # Run the runtime binary with the specified RUNTIME_ROOT
@@ -280,9 +170,13 @@ function setup_crio() {
         --apparmor-profile "$apparmor" \
         --cgroup-manager "$CONTAINER_CGROUP_MANAGER" \
         --conmon "$CONMON_BINARY" \
+        --container-attach-socket-dir "$CONTAINER_ATTACH_SOCKET_DIR" \
+        --container-exits-dir "$CONTAINER_EXITS_DIR" \
         --listen "$CRIO_SOCKET" \
-        --registry "quay.io" \
-        --registry "docker.io" \
+        --irqbalance-config-file "$IRQBALANCE_CONFIG_FILE" \
+        --irqbalance-config-restore-file "$IRQBALANCE_CONFIG_RESTORE_FILE" \
+        --signature-policy "$SIGNATURE_POLICY" \
+        --signature-policy-dir "$SIGNATURE_POLICY_DIR" \
         -r "$TESTDIR/crio" \
         --runroot "$TESTDIR/crio-run" \
         --cni-default-network "$CNI_DEFAULT_NETWORK" \
@@ -294,15 +188,9 @@ function setup_crio() {
         -d "" \
         $OVERRIDE_OPTIONS \
         config >"$CRIO_CUSTOM_CONFIG"
-    sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CONFIG"
-    sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CUSTOM_CONFIG"
     # make sure we don't run with nodev, or else mounting a readonly rootfs will fail: https://github.com/cri-o/cri-o/issues/1929#issuecomment-474240498
     sed -r -e 's/nodev(,)?//g' -i "$CRIO_CONFIG"
     sed -r -e 's/nodev(,)?//g' -i "$CRIO_CUSTOM_CONFIG"
-    sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CONFIG"
-    sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
-    sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CONFIG"
-    sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
     prepare_network_conf
 }
 
@@ -322,8 +210,9 @@ function check_images() {
 
     # these two variables are used by a few tests
     eval "$(jq -r '.images[] |
-        select(.repoTags[0] == "quay.io/crio/redis:alpine") |
+        select(.repoTags[0] == "quay.io/crio/fedora-crio-ci:latest") |
         "REDIS_IMAGEID=" + .id + "\n" +
+        "REDIS_IMAGEDIGEST=" + .repoDigests[0] + "\n" +
 	"REDIS_IMAGEREF=" + .repoDigests[0]' <<<"$json")"
 }
 
@@ -366,6 +255,52 @@ function port_listens() {
     netstat -ln46 | grep -q ":$1\b"
 }
 
+# Check whether a specific pair of IP address or hostname and port number listens.
+function host_and_port_listens() {
+    local host="$1"
+    local port="$2"
+
+    netstat -ln46 | grep -E -q "${host}:${port}\b"
+}
+
+function check_kernel_version() {
+    local version="$1"
+
+    required_major=${version%%.*}
+    required_minor=${version##*.}
+
+    [[ $(uname -r) =~ ([0-9]+)\.([0-9]+) ]]
+    major=${BASH_REMATCH[1]}
+    minor=${BASH_REMATCH[2]}
+
+    ((major > required_major)) || ((major == required_major && minor >= required_minor))
+}
+
+function check_crictl_version() {
+    local version="$1"
+
+    required_major=${version%%.*}
+    required_minor=${version##*.}
+
+    crictl_binary=${CRICTL_BINARY:-/usr/bin/crictl}
+
+    [[ $($crictl_binary --version) =~ ([0-9]+)\.([0-9]+) ]]
+    major=${BASH_REMATCH[1]}
+    minor=${BASH_REMATCH[2]}
+
+    ((major > required_major)) || ((major == required_major && minor >= required_minor))
+}
+
+function requires_kernel() {
+    check_kernel_version "$@" ||
+        skip "requires kernel version \"$1\" or newer"
+}
+
+function requires_crictl() {
+    check_crictl_version "$@" ||
+        skip "requires crictl version \"$1\" or newer"
+}
+
 function cleanup_ctrs() {
     crictl rm -a -f
     rm -f "$HOOKSCHECK"
@@ -405,17 +340,12 @@ function restart_crio() {
     fi
 }
 
-function cleanup_lvm() {
-    if [ -n "${LVM_DEVICE+x}" ]; then
-        lvm lvremove -y storage/thinpool
-        lvm vgremove -y storage
-        lvm pvremove -y "$LVM_DEVICE"
-    fi
-}
-
 function cleanup_testdir() {
     # shellcheck disable=SC2013
-    for mnt in $(awk '{print $2}' /proc/self/mounts | grep ^"$TESTDIR" | sort); do
+    # Note: By using 'sort -r' we're ensuring longer paths go first, which
+    # means that if there are nested mounts, the innermost mountpoints get
+    # unmounted first
+    for mnt in $(awk '{print $2}' /proc/self/mounts | grep ^"$TESTDIR" | sort -r); do
         umount "$mnt"
     done
     rm -rf "$TESTDIR" || true
@@ -430,6 +360,12 @@ function cleanup_test() {
         cat "$CRIO_LOG"
         echo "# --- --- ---"
     fi
+    if [[ $RUNTIME_TYPE == pod ]]; then
+        echo "# --- conmonrs logs :: ---"
+        CONMONRS_PID=$(sed -nr 's/.*Running conmonrs with PID: ([0-9]+).*/\1/p' "$CRIO_LOG")
+        journalctl _COMM=conmonrs _PID="$CONMONRS_PID" --no-pager
+        echo "# --- --- ---"
+    fi
 
     # Leave the test artifacts intact for failing tests if requested.
     #
@@ -440,8 +376,12 @@ function cleanup_test() {
         cleanup_ctrs
         cleanup_pods
         stop_crio
-        cleanup_lvm
         cleanup_testdir
+        if [ "$RUNTIME_TYPE" == "vm" ]; then
+            # cleanup left over kata processes
+            # don't fail if there is none
+            run killall containerd-shim-kata-v2
+        fi
     else
         echo >&3 "* Failed \"$BATS_TEST_DESCRIPTION\", TESTDIR=$TESTDIR, LVM_DEVICE=${LVM_DEVICE:-}"
     fi
@@ -459,27 +399,44 @@ function is_apparmor_enabled() {
     grep -q Y "$APPARMOR_PARAMETERS_FILE_PATH" 2>/dev/null
 }
 
+function is_selinux_enabled() {
+    selinuxenabled 2>/dev/null || false
+}
+
+function is_selinux_enforcing() {
+    command -v getenforce 1>/dev/null || false
+
+    [[ $(getenforce) == "Enforcing" ]]
+}
+
 function prepare_network_conf() {
     mkdir -p "$CRIO_CNI_CONFIG"
-    cat >"$CRIO_CNI_CONFIG/10-crio.conf" <<-EOF
+    cat >"$CRIO_CNI_CONFIG/10-crio.conflist" <<-EOF
 {
     "cniVersion": "0.3.1",
     "name": "$CNI_DEFAULT_NETWORK",
-    "type": "$CNI_TYPE",
-    "bridge": "cni0",
-    "isGateway": true,
-    "ipMasq": true,
-    "ipam": {
-        "type": "host-local",
-        "routes": [
-            { "dst": "$POD_IPV4_DEF_ROUTE" },
-            { "dst": "$POD_IPV6_DEF_ROUTE" }
-        ],
-        "ranges": [
-            [{ "subnet": "$POD_IPV4_CIDR" }],
-            [{ "subnet": "$POD_IPV6_CIDR" }]
-        ]
-    }
+    "disableGC": true,
+    "plugins": [
+        {
+            "cniVersion": "0.3.1",
+            "name": "$CNI_DEFAULT_NETWORK",
+            "type": "$CNI_TYPE",
+            "bridge": "cni0",
+            "isGateway": true,
+            "ipMasq": true,
+            "ipam": {
+                "type": "host-local",
+                "routes": [
+                    { "dst": "$POD_IPV4_DEF_ROUTE" },
+                    { "dst": "$POD_IPV6_DEF_ROUTE" }
+                ],
+                "ranges": [
+                    [{ "subnet": "$POD_IPV4_CIDR" }],
+                    [{ "subnet": "$POD_IPV6_CIDR" }]
+                ]
+            }
+        }
+    ]
 }
 EOF
 }
@@ -495,7 +452,7 @@ function pod_ip() {
 function get_host_ip() {
     gateway_dev=$(ip -o route show default $POD_IPV4_DEF_ROUTE | sed 's/.*dev \([^[:space:]]*\).*/\1/')
     [ "$gateway_dev" ]
-    ip -o -4 addr show dev "$gateway_dev" scope global | sed 's/.*inet \([0-9.]*\).*/\1/'
+    ip -o -4 addr show dev "$gateway_dev" scope global | sed 's/.*inet \([0-9.]*\).*/\1/' | head -1
 }
 
 function ping_pod() {
@@ -533,10 +490,31 @@ function cleanup_network_conf() {
 }
 
 function reload_crio() {
-    kill -HUP $CRIO_PID
+    kill -HUP "$CRIO_PID"
 }
 
+# wait_for_log <log message> [line to skip]
+#
+# Wait for a given log message in crio log file.
+#
+# If a second parameter is given, the log will be truncated from start to the
+# first occurrence of the second parameter. This allow to catch messages after
+# the given string.
+#
+# The function registers the timestamp of the first occurrence it finds to an
+# environment variable "LAST_TIMESTAMP".
+# This variable can then be used as the second parameter to the function, making
+# sure that we can find repetitions of the same log messages over time.
+#
+# $1 : log message to wait for
+# $2 : previous string that needs to be skipped
+#
 function wait_for_log() {
+    export LAST_TIMESTAMP
+    local LOGFILE="$CRIO_LOG"
+    if [ "$2" != "" ]; then
+        LOGFILE=$(mktemp "$TESTDIR"/wait_for_log_XXXXXX)
+    fi
     CNT=0
     while true; do
         if [[ $CNT -gt 50 ]]; then
@@ -544,7 +522,18 @@ function wait_for_log() {
             exit 1
         fi
 
-        if grep -iq "$1" "$CRIO_LOG"; then
+        if [ "$2" != "" ]; then
+            # create a temp log file containing only the logs after the given string
+            sed -e "1,/$2/d" <"$CRIO_LOG" >"$LOGFILE"
+        fi
+        status=0 # initialize the variable to make shellcheck happy
+        run grep -i -m 1 "$1" "$LOGFILE"
+        if [ "$status" -eq 0 ]; then
+            # register only the time part of the timestamp
+            # this should be a string with no space in it, and that is unique in the log
+            # NOTE: log time format = 2006-01-02T15:04:05.999999999Z
+            TIMESTAMP_REGEXP="[[:digit:]]{4}-[[:digit:]]{2}-[[:digit:]]{2}.[[:digit:]]{2}:[[:digit:]]{2}:[[:digit:]]{2}.[[:digit:]]*."
+            LAST_TIMESTAMP=$(echo "$output" | grep -oE "time=\"$TIMESTAMP_REGEXP" | cut -d" " -f2)
             break
         fi
 
@@ -559,12 +548,6 @@ function replace_config() {
     sed -i -e 's;\('"$1"' = "\).*\("\);\1'"$2"'\2;' "$CRIO_CUSTOM_CONFIG"
 }
 
-# Fails the current test, providing the error given.
-function fail() {
-    echo "FAIL [${BATS_TEST_NAME} ${BASH_SOURCE[0]##*/}:${BASH_LINENO[0]}] $*" >&2
-    exit 1
-}
-
 # tests whether the node is configured to use cgroupv2
 function is_cgroup_v2() {
     test "$(stat -f -c%T /sys/fs/cgroup)" = "cgroup2fs"
@@ -573,6 +556,8 @@ function is_cgroup_v2() {
 function create_runtime_with_allowed_annotation() {
     local NAME="$1"
     local ANNOTATION="$2"
+    unset CONTAINER_DEFAULT_RUNTIME
+    unset CONTAINER_RUNTIMES
     cat <<EOF >"$CRIO_CONFIG_DIR/01-$NAME.conf"
 [crio.runtime]
 default_runtime = "$NAME"
@@ -608,6 +593,22 @@ function set_swap_fields_given_cgroup_version() {
     fi
 }
 
+function set_container_pod_cgroup_root() {
+    controller="$1"
+    ctr_id="$2"
+    CGROUP_ROOT="/sys/fs/cgroup"
+    if is_cgroup_v2; then
+        controller=""
+    fi
+
+    export POD_CGROUP="$CGROUP_ROOT"/"$controller"/pod_123.slice/pod_123-456.slice
+    export CTR_CGROUP="$POD_CGROUP"/crio-"$ctr_id".scope
+    if [ "$CONTAINER_CGROUP_MANAGER" != "systemd" ]; then
+        export POD_CGROUP="$CGROUP_ROOT"/"$controller"/pod_123-456
+        export CTR_CGROUP="$POD_CGROUP"/crio-"$ctr_id"
+    fi
+}
+
 function check_conmon_cpuset() {
     local ctr_id="$1"
     local cpuset="$2"
@@ -639,4 +640,151 @@ function check_conmon_cpuset() {
             fi
         fi
     fi
+}
+
+function setup_kubensmnt() {
+    if [[ -z $PIN_ROOT ]]; then
+        PIN_ROOT=$TESTDIR/kubens
+    fi
+    PINNED_MNT_NS=$PIN_ROOT/mntns/mnt
+    $PINNS_BINARY_PATH -d "$PIN_ROOT" -f mnt -m
+    export KUBENSMNT=$PINNED_MNT_NS
+}
+
+function has_criu() {
+    if [[ "$TEST_USERNS" == "1" ]]; then
+        skip "Cannot run CRIU tests in user namespace."
+    fi
+
+    if [[ "$CONTAINER_DEFAULT_RUNTIME" != "runc" ]]; then
+        skip "Checkpoint/Restore with pods only works in runc."
+    fi
+
+    if ! "$CHECKCRIU_BINARY"; then
+        skip "CRIU check failed"
+    fi
+}
+
+function has_buildah() {
+    if [ ! -e "$(command -v buildah)" ]; then
+        skip "buildah binary not found"
+    fi
+}
+
+# Run buildah with the specified root directory (same as CRI-O)
+function run_buildah() {
+    buildah --log-level debug --root "$TESTDIR/crio" "$@"
+}
+
+function wait_until_exit() {
+    ctr_id=$1
+    # Wait for container to exit
+    attempt=0
+    while [ $attempt -le 100 ]; do
+        attempt=$((attempt + 1))
+        output=$(crictl inspect -o table "$ctr_id")
+        if [[ "$output" == *"State: CONTAINER_EXITED"* ]]; then
+            [[ "$output" == *"Exit Code: ${EXPECTED_EXIT_STATUS:-0}"* ]]
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Helpers for pod annotations tests
+function prepare_cni_plugin() {
+    # name the config with prefix 001 to ensure the corresponding cni plugin will be invoked when pod is created
+    mkdir -p "$CRIO_CNI_CONFIG"
+    cat >"$CRIO_CNI_CONFIG"/001-"$CNI_PLUGIN_NAME".conf <<-EOF
+{
+  "cniVersion": "0.3.1",
+  "name": "$CNI_PLUGIN_NAME",
+  "type": "$CNI_PLUGIN_NAME.sh",
+  "config": {
+    "log_path": "$1"
+  },
+  "capabilities": {
+    "io.kubernetes.cri.pod-annotations": $2
+  }
+}
+EOF
+    chmod 755 "$TESTDATA"/"$CNI_PLUGIN_NAME".sh
+    # copy the cni plugin into cni plugin binary directory
+    cp "$TESTDATA"/"$CNI_PLUGIN_NAME".sh "$CRIO_CNI_PLUGIN"/"$CNI_PLUGIN_NAME".sh
+}
+
+function prepare_chained_cni_plugins() {
+    # create a chained cni plugin configuration file
+    mkdir -p "$CRIO_CNI_CONFIG"
+    cat >"$CRIO_CNI_CONFIG"/001-"$CNI_PLUGIN_NAME".conflist <<-EOF
+{
+  "cniVersion": "0.3.1",
+  "name": "$CNI_PLUGIN_NAME",
+  "plugins": [
+    {
+      "type": "$CNI_PLUGIN_NAME.sh",
+      "config": {
+        "log_path": "$1"
+      },
+      "capabilities": {
+        "io.kubernetes.cri.pod-annotations": $2
+      }
+    },
+    {
+      "type": "$CNI_PLUGIN_NAME.sh",
+      "config": {
+        "log_path": "$3"
+      },
+      "capabilities": {
+        "io.kubernetes.cri.pod-annotations": $4
+      }
+    }
+  ]
+}
+EOF
+    chmod 777 "$TESTDATA"/"$CNI_PLUGIN_NAME".sh
+    cp "$TESTDATA"/"$CNI_PLUGIN_NAME".sh "$CRIO_CNI_PLUGIN"/"$CNI_PLUGIN_NAME".sh
+}
+
+function contains() {
+    # this function checks whether b contains a
+    a=$1
+    b=$2
+    # if a and b are both null or empty, we consider them equal
+    if { [[ $a == null ]] || [[ $a == '{}' ]]; } && { [[ $b == null ]] || [[ $b == '{}' ]]; }; then
+        return 0
+    fi
+    if [[ $a == null ]] || [[ $a == '{}' ]] || [[ $b == null ]] || [[ $b == '{}' ]]; then
+        return 1
+    fi
+    for key in $(echo "$a" | jq 'keys[]'); do
+        value=$(jq -e ."$key" <<<"$b")
+        # value is null means b does not have this key
+        if [[ $value == null ]]; then
+            return 1
+        # if b has this key, checks their value
+        elif [[ $value != $(jq -e ."$key" <<<"$a") ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+function annotations_equal() {
+    cni_plugin_received=$1
+    expected=$2
+    contains "$cni_plugin_received" "$expected"
+    expected_contains_received=$?
+    contains "$expected" "$cni_plugin_received"
+    received_contains_expected=$?
+    [[ $expected_contains_received -eq 0 ]] && [[ $received_contains_expected -eq 0 ]]
+}
+
+function remove_random_storage_layer() {
+    find "$TESTDIR"/crio/overlay -maxdepth 1 | grep '.*/[a-f0-9\-]\{64\}.*' | head -1 | xargs rm -Rf
+}
+
+function is_using_crun() {
+    runtime --version | grep -q crun
 }

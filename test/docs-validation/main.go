@@ -8,8 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cri-o/cri-o/pkg/config"
 	"github.com/sirupsen/logrus"
+
+	"github.com/cri-o/cri-o/pkg/config"
 )
 
 type entry struct {
@@ -25,7 +26,7 @@ const (
 )
 
 var (
-	// Tags which should be not checked at all
+	// Tags which should be not checked at all.
 	excludedTags = []string{
 		"plugin_dir",                  // deprecated
 		"runtimes",                    // printed as separate table
@@ -33,7 +34,7 @@ var (
 		"manage_network_ns_lifecycle", // deprecated
 	}
 
-	// Tags where it should not validate the values
+	// Tags where it should not validate the values.
 	excludedTagsValue = []string{
 		"apparmor_profile", // contains dynamic version number
 		"root",             // user dependent
@@ -41,19 +42,18 @@ var (
 		"storage_driver",   // user dependent
 	}
 
-	// Tags where it should not validate the values
+	// Tags where it should not validate the values.
 	excludedCLI = []string{
 		"workloads", // too complex an option for a CLI flag
 	}
 
-	// Mapping for inconsistencies between tags and CLI arguments
+	// Mapping for inconsistencies between tags and CLI arguments.
 	tagToCLIOption = map[string]string{
 		"network_dir":         "cni-config-dir",
 		"plugin_dir":          "cni-plugin-dir",
 		"plugin_dirs":         "cni-plugin-dir",
 		"insecure_registries": "insecure-registry",
 		"log_to_journald":     "log-journald",
-		"registries":          "registry",
 		"storage_option":      "storage-opt",
 	}
 )
@@ -230,14 +230,18 @@ func stringInSlice(a string, list []string) bool {
 
 func allEntries(c *config.Config) []entry {
 	entries := &[]entry{}
-	recursiveEntries(reflect.ValueOf(*c), entries, map[interface{}]bool{})
+	recursiveEntries(reflect.ValueOf(*c), entries, map[any]bool{})
 	return *entries
+}
+
+type stringer interface {
+	String() string
 }
 
 func recursiveEntries(
 	v reflect.Value,
 	entries *[]entry,
-	seen map[interface{}]bool,
+	seen map[any]bool,
 ) {
 	for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
 		if v.Kind() == reflect.Ptr {
@@ -252,12 +256,12 @@ func recursiveEntries(
 
 	switch v.Kind() {
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
+		for i := range v.Len() {
 			recursiveEntries(v.Index(i), entries, seen)
 		}
 	case reflect.Struct:
 		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
+		for i := range t.NumField() {
 			field := t.Field(i)
 			tag := strings.TrimSuffix(field.Tag.Get("toml"), ",omitempty")
 			name := field.Name
@@ -265,12 +269,19 @@ func recursiveEntries(
 			vv := v.FieldByName(name)
 			value := ""
 			if !stringInSlice(tag, excludedTagsValue) {
-				switch vv.Kind() {
-				case reflect.Bool:
+				switch {
+				case field.Type.Implements(reflect.TypeOf((*stringer)(nil)).Elem()):
+					// We need a checked type assertion to make golangci-lint happy...
+					if str, ok := vv.MethodByName("String").Interface().(func() string); ok {
+						value = strconv.Quote(str())
+						break
+					}
+					fallthrough
+				case vv.Kind() == reflect.Bool:
 					value = strconv.FormatBool(vv.Bool())
-				case reflect.Int64:
+				case vv.Kind() == reflect.Int64:
 					value = strconv.FormatInt(vv.Int(), 10)
-				case reflect.String:
+				case vv.Kind() == reflect.String:
 					value = strconv.Quote(vv.String())
 				}
 			}

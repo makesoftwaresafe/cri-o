@@ -1,9 +1,10 @@
 package ulimits_test
 
 import (
-	"github.com/cri-o/cri-o/internal/config/ulimits"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/internal/config/ulimits"
 )
 
 var _ = t.Describe("New", func() {
@@ -35,7 +36,7 @@ var _ = t.Describe("LoadUlimits", func() {
 
 		// Then
 		Expect(sut.Ulimits()).To(BeEmpty())
-		Expect(err).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
 	})
 	It("should succeed if valid", func() {
 		// Given
@@ -46,7 +47,7 @@ var _ = t.Describe("LoadUlimits", func() {
 		err := sut.LoadUlimits([]string{"locks=10:64"})
 
 		// Then
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(sut.Ulimits()).NotTo(BeEmpty())
 	})
 })

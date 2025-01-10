@@ -3,15 +3,17 @@ package server_test
 import (
 	"context"
 
-	"github.com/cri-o/cri-o/internal/storage"
-	"github.com/golang/mock/gomock"
+	"github.com/containers/storage/pkg/unshare"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.uber.org/mock/gomock"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/storage"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("RunPodSandbox", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -25,13 +27,16 @@ var _ = t.Describe("RunPodSandbox", func() {
 		// TODO(sgrunert): refactor the internal function to reduce the
 		// cyclomatic complexity and test it separately
 		It("should fail when container creation errors", func() {
+			if unshare.IsRootless() {
+				Skip("should run as root")
+			}
+
 			// Given
 			gomock.InOrder(
 				runtimeServerMock.EXPECT().CreatePodSandbox(gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any()).
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(storage.ContainerInfo{
 						RunDir: "/tmp",
 						Config: &v1.Image{Config: v1.ImageConfig{}},
@@ -40,7 +45,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 					Return(storage.RuntimeContainerMetadata{}, nil),
 				runtimeServerMock.EXPECT().SetContainerMetadata(gomock.Any(),
 					gomock.Any()).Return(nil),
-				runtimeServerMock.EXPECT().DeleteContainer(gomock.Any()).
+				runtimeServerMock.EXPECT().DeleteContainer(gomock.Any(), gomock.Any()).
 					Return(nil),
 			)
 
@@ -63,7 +68,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 				}})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 
@@ -74,7 +79,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 				&types.RunPodSandboxRequest{Config: &types.PodSandboxConfig{}})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 
@@ -87,7 +92,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 				}})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 
@@ -102,7 +107,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 				}})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 
@@ -112,10 +117,9 @@ var _ = t.Describe("RunPodSandbox", func() {
 				runtimeServerMock.EXPECT().CreatePodSandbox(gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any()).
+					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(storage.ContainerInfo{}, nil),
-				runtimeServerMock.EXPECT().DeleteContainer(gomock.Any()).
+				runtimeServerMock.EXPECT().DeleteContainer(gomock.Any(), gomock.Any()).
 					Return(nil),
 			)
 
@@ -139,7 +143,7 @@ var _ = t.Describe("RunPodSandbox", func() {
 				}})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})

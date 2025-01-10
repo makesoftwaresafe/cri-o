@@ -4,12 +4,12 @@ import (
 	"context"
 	"os"
 
-	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ImageFsInfo", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -24,19 +24,21 @@ var _ = t.Describe("ImageFsInfo", func() {
 			gomock.InOrder(
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().GraphRoot().Return(""),
+				storeMock.EXPECT().ImageStore().Return(""),
 				storeMock.EXPECT().GraphDriverName().Return("test"),
 			)
 			testImageDir := "test-images"
-			Expect(os.MkdirAll(testImageDir, 0o755)).To(BeNil())
+			Expect(os.MkdirAll(testImageDir, 0o755)).To(Succeed())
 			defer os.RemoveAll(testImageDir)
 
 			// When
-			response, err := sut.ImageFsInfo(context.Background())
+			response, err := sut.ImageFsInfo(context.Background(), nil)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 			Expect(len(response.ImageFilesystems)).To(BeEquivalentTo(1))
+			Expect(len(response.ContainerFilesystems)).To(BeEquivalentTo(1))
 		})
 
 		It("should fail on invalid image dir", func() {
@@ -44,14 +46,15 @@ var _ = t.Describe("ImageFsInfo", func() {
 			gomock.InOrder(
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().GraphRoot().Return(""),
+				storeMock.EXPECT().ImageStore().Return(""),
 				storeMock.EXPECT().GraphDriverName().Return(""),
 			)
 
 			// When
-			response, err := sut.ImageFsInfo(context.Background())
+			response, err := sut.ImageFsInfo(context.Background(), nil)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})

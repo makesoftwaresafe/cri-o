@@ -3,27 +3,35 @@ package storage_test
 import (
 	"context"
 
-	istorage "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/types"
 	cs "github.com/containers/storage"
-	"github.com/cri-o/cri-o/internal/storage"
-	containerstoragemock "github.com/cri-o/cri-o/test/mocks/containerstorage"
-	criostoragemock "github.com/cri-o/cri-o/test/mocks/criostorage"
-	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
+
+	"github.com/cri-o/cri-o/internal/mockutils"
+	"github.com/cri-o/cri-o/internal/storage"
+	"github.com/cri-o/cri-o/internal/storage/references"
+	containerstoragemock "github.com/cri-o/cri-o/test/mocks/containerstorage"
+	criostoragemock "github.com/cri-o/cri-o/test/mocks/criostorage"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Runtime", func() {
+	imageID, err := storage.ParseStorageImageIDFromOutOfProcessData("8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b")
+	Expect(err).ToNot(HaveOccurred())
+
 	var (
-		mockCtrl        *gomock.Controller
-		storeMock       *containerstoragemock.MockStore
-		imageServerMock *criostoragemock.MockImageServer
+		mockCtrl             *gomock.Controller
+		storeMock            *containerstoragemock.MockStore
+		storageTransportMock *criostoragemock.MockStorageTransport
+		imageServerMock      *criostoragemock.MockImageServer
 	)
 
 	// The system under test
 	var sut storage.RuntimeServer
+
+	ctx := context.TODO()
 
 	// Prepare the system under test and register a test name and key before
 	// each test
@@ -31,28 +39,39 @@ var _ = t.Describe("Runtime", func() {
 		// Setup the mocks
 		mockCtrl = gomock.NewController(GinkgoT())
 		storeMock = containerstoragemock.NewMockStore(mockCtrl)
+		storageTransportMock = criostoragemock.NewMockStorageTransport(mockCtrl)
 		imageServerMock = criostoragemock.NewMockImageServer(mockCtrl)
 
-		sut = storage.GetRuntimeService(context.Background(), imageServerMock)
+		sut = storage.GetRuntimeService(context.Background(), imageServerMock, storageTransportMock)
 		Expect(sut).NotTo(BeNil())
 	})
 	AfterEach(func() {
 		mockCtrl.Finish()
 	})
 
-	// The part of createContainerOrPodSandbox before a CreateContainer call, if the image already exists locally.
-	mockCreateContainerOrPodSandboxImageExists := func() mockSequence {
-		return inOrder(
+	// The part of runtimeService.CreateContainer before a CreateContainer call, if the image already exists locally.
+	mockCreateContainerImageExists := func() mockutils.MockSequence {
+		return mockutils.InOrder(
 			imageServerMock.EXPECT().GetStore().Return(storeMock),
-			mockParseStoreReference(storeMock, "imagename"),
-			imageServerMock.EXPECT().GetStore().Return(storeMock),
-			mockGetStoreImage(storeMock, "docker.io/library/imagename:latest", "123"),
-			mockNewImage(storeMock, "docker.io/library/imagename:latest", "123"),
+			mockNewImage(storeMock, "", imageID.IDStringForOutOfProcessConsumptionOnly(), imageID.IDStringForOutOfProcessConsumptionOnly()),
 			imageServerMock.EXPECT().GetStore().Return(storeMock),
 		)
 	}
 
-	// nolint: dupl
+	// The part of CreatePodSandbox before a CreateContainer call, if the image already exists locally.
+	mockCreatePodSandboxImageExists := func() mockutils.MockSequence {
+		return mockutils.InOrder(
+			imageServerMock.EXPECT().GetStore().Return(storeMock),
+			mockResolveReference(storeMock, storageTransportMock,
+				"docker.io/library/imagename:latest", "",
+				imageID.IDStringForOutOfProcessConsumptionOnly()),
+			imageServerMock.EXPECT().GetStore().Return(storeMock),
+			mockNewImage(storeMock, "", imageID.IDStringForOutOfProcessConsumptionOnly(), imageID.IDStringForOutOfProcessConsumptionOnly()),
+			imageServerMock.EXPECT().GetStore().Return(storeMock),
+		)
+	}
+
+	//nolint: dupl
 	t.Describe("GetRunDir", func() {
 		It("should succeed to retrieve the run dir", func() {
 			// Given
@@ -69,7 +88,7 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetRunDir("")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(dir).To(Equal("dir"))
 		})
 
@@ -85,7 +104,7 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetRunDir("")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(dir).To(Equal(""))
 		})
 
@@ -101,13 +120,13 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetRunDir("")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerID))
 			Expect(dir).To(Equal(""))
 		})
 	})
 
-	// nolint: dupl
+	//nolint: dupl
 	t.Describe("GetWorkDir", func() {
 		It("should succeed to retrieve the work dir", func() {
 			// Given
@@ -124,7 +143,7 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetWorkDir("")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(dir).To(Equal("dir"))
 		})
 
@@ -140,7 +159,7 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetWorkDir("")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(dir).To(Equal(""))
 		})
 
@@ -156,7 +175,7 @@ var _ = t.Describe("Runtime", func() {
 			dir, err := sut.GetWorkDir("")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerID))
 			Expect(dir).To(Equal(""))
 		})
@@ -175,19 +194,19 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.StopContainer("id")
+			err := sut.StopContainer(ctx, "id")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should fail to stop a container on empty ID", func() {
 			// Given
 			// When
-			err := sut.StopContainer("")
+			err := sut.StopContainer(ctx, "")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerID))
 		})
 
@@ -200,10 +219,10 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.StopContainer("id")
+			err := sut.StopContainer(ctx, "id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to stop a container on unmount error", func() {
@@ -218,10 +237,10 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.StopContainer("id")
+			err := sut.StopContainer(ctx, "id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -241,7 +260,7 @@ var _ = t.Describe("Runtime", func() {
 			mount, err := sut.StartContainer("id")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(mount).To(Equal("mount"))
 		})
 
@@ -257,7 +276,7 @@ var _ = t.Describe("Runtime", func() {
 			mount, err := sut.StartContainer("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mount).To(Equal(""))
 		})
 
@@ -273,7 +292,7 @@ var _ = t.Describe("Runtime", func() {
 			mount, err := sut.StartContainer("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerID))
 			Expect(mount).To(Equal(""))
 		})
@@ -290,7 +309,7 @@ var _ = t.Describe("Runtime", func() {
 			mount, err := sut.StartContainer("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mount).To(Equal(""))
 		})
 
@@ -309,7 +328,7 @@ var _ = t.Describe("Runtime", func() {
 			mount, err := sut.StartContainer("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mount).To(Equal(""))
 		})
 	})
@@ -327,7 +346,7 @@ var _ = t.Describe("Runtime", func() {
 			metadata, err := sut.GetContainerMetadata("id")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(metadata).NotTo(BeNil())
 			Expect(metadata.Pod).To(BeTrue())
 		})
@@ -344,7 +363,7 @@ var _ = t.Describe("Runtime", func() {
 			metadata, err := sut.GetContainerMetadata("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(metadata).NotTo(BeNil())
 		})
 
@@ -360,7 +379,7 @@ var _ = t.Describe("Runtime", func() {
 			metadata, err := sut.GetContainerMetadata("id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(metadata).NotTo(BeNil())
 		})
 	})
@@ -380,7 +399,7 @@ var _ = t.Describe("Runtime", func() {
 			err := sut.SetContainerMetadata("id", metadata)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should fail to set the container on store error", func() {
@@ -396,7 +415,7 @@ var _ = t.Describe("Runtime", func() {
 			err := sut.SetContainerMetadata("id", metadata)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -415,19 +434,19 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.DeleteContainer("id")
+			err := sut.DeleteContainer(ctx, "id")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should fail to delete a container on invalid ID", func() {
 			// Given
 			// When
-			err := sut.DeleteContainer("")
+			err := sut.DeleteContainer(ctx, "")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerID))
 		})
 
@@ -440,10 +459,10 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.DeleteContainer("id")
+			err := sut.DeleteContainer(ctx, "id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to delete a container on store deletion error", func() {
@@ -460,10 +479,10 @@ var _ = t.Describe("Runtime", func() {
 			)
 
 			// When
-			err := sut.DeleteContainer("id")
+			err := sut.DeleteContainer(ctx, "id")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -474,17 +493,13 @@ var _ = t.Describe("Runtime", func() {
 				err  error
 			)
 
-			BeforeEach(func() {
-				// Given
-				inOrder(
-					mockCreateContainerOrPodSandboxImageExists(),
+			mockUnderlyingCreateContainerSuccess := func() mockutils.MockSequence {
+				return mockutils.InOrder(
 					storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 						gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 						Return(&cs.Container{ID: "id"}, nil),
 					imageServerMock.EXPECT().GetStore().Return(storeMock),
-					storeMock.EXPECT().Names(gomock.Any()).Return([]string{}, nil),
-					imageServerMock.EXPECT().GetStore().Return(storeMock),
-					storeMock.EXPECT().SetNames(gomock.Any(), gomock.Any()).Return(nil),
+					storeMock.EXPECT().AddNames(gomock.Any(), gomock.Any()).Return(nil),
 					imageServerMock.EXPECT().GetStore().Return(storeMock),
 					storeMock.EXPECT().ContainerDirectory(gomock.Any()).
 						Return("dir", nil),
@@ -492,23 +507,35 @@ var _ = t.Describe("Runtime", func() {
 					storeMock.EXPECT().ContainerRunDirectory(gomock.Any()).
 						Return("runDir", nil),
 				)
-			})
+			}
 
 			It("should succeed to create a container", func() {
+				// Given
+				mockutils.InOrder(
+					mockCreateContainerImageExists(),
+					mockUnderlyingCreateContainerSuccess(),
+				)
+
 				// When
 				info, err = sut.CreateContainer(&types.SystemContext{},
-					"podName", "podID", "imagename",
-					"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+					"podName", "podID", "imagename", imageID,
 					"containerName", "containerID", "",
 					0, nil, []string{"mountLabel"}, false,
 				)
 			})
 
 			It("should succeed to create a pod sandbox", func() {
+				// Given
+				pauseImage, err2 := references.ParseRegistryImageReferenceFromOutOfProcessData("imagename:latest")
+				Expect(err2).ToNot(HaveOccurred())
+				mockutils.InOrder(
+					mockCreatePodSandboxImageExists(),
+					mockUnderlyingCreateContainerSuccess(),
+				)
+
 				// When
 				info, err = sut.CreatePodSandbox(&types.SystemContext{},
-					"podName", "podID", "imagename", "",
-					"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+					"podName", "podID", pauseImage, "",
 					"containerName", "metadataName",
 					"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
 				)
@@ -516,7 +543,7 @@ var _ = t.Describe("Runtime", func() {
 
 			AfterEach(func() {
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(info).NotTo(BeNil())
 				Expect(info.ID).To(Equal("id"))
 				Expect(info.Dir).To(Equal("dir"))
@@ -526,73 +553,58 @@ var _ = t.Describe("Runtime", func() {
 
 		It("should fail to create a container on invalid pod ID", func() {
 			// Given
+
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidPodName))
 		})
 
 		It("should fail to create a container on invalid pod name", func() {
 			// Given
+
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"", "podID", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"", "podID", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidPodName))
-		})
-
-		It("should fail to create a container on invalid image ID", func() {
-			// Given
-			// When
-			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "", "",
-				"containerName", "containerID", "metadataName",
-				0, nil, []string{"mountLabel"}, false,
-			)
-
-			// Then
-			Expect(err).NotTo(BeNil())
-			Expect(err).To(Equal(storage.ErrInvalidImageName))
 		})
 
 		It("should fail to create a container on invalid container name", func() {
 			// Given
+
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "imagename", "imageID",
+				"podName", "podID", "imagename", imageID,
 				"", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(storage.ErrInvalidContainerName))
 		})
 
 		It("should fail to create a container on run dir error", func() {
 			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
+			mockutils.InOrder(
+				mockCreateContainerImageExists(),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(&cs.Container{ID: "id"}, nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().Names(gomock.Any()).Return([]string{}, nil),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().SetNames(gomock.Any(), gomock.Any()).Return(nil),
+				storeMock.EXPECT().AddNames(gomock.Any(), gomock.Any()).Return(nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().ContainerDirectory(gomock.Any()).
 					Return("dir", nil),
@@ -605,27 +617,24 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to create a container on container dir error", func() {
 			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
+			mockutils.InOrder(
+				mockCreateContainerImageExists(),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(&cs.Container{ID: "id"}, nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().Names(gomock.Any()).Return([]string{}, nil),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().SetNames(gomock.Any(), gomock.Any()).Return(nil),
+				storeMock.EXPECT().AddNames(gomock.Any(), gomock.Any()).Return(nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().ContainerDirectory(gomock.Any()).
 					Return("", t.TestError),
@@ -635,95 +644,68 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to create a pod sandbox on set names error", func() {
 			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
+			pauseImage, err := references.ParseRegistryImageReferenceFromOutOfProcessData("imagename:latest")
+			Expect(err).ToNot(HaveOccurred())
+			mockutils.InOrder(
+				mockCreatePodSandboxImageExists(),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(&cs.Container{ID: "id"}, nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().Names(gomock.Any()).Return([]string{}, nil),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().SetNames(gomock.Any(), gomock.Any()).
+				storeMock.EXPECT().AddNames(gomock.Any(), gomock.Any()).
 					Return(t.TestError),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().DeleteContainer(gomock.Any()).Return(t.TestError),
 			)
 
 			// When
-			_, err := sut.CreatePodSandbox(&types.SystemContext{},
-				"podName", "podID", "imagename", "",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+			_, err = sut.CreatePodSandbox(&types.SystemContext{},
+				"podName", "podID", pauseImage, "",
 				"containerName", "metadataName",
 				"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
-		})
-
-		It("should fail to create a pod sandbox on names retrieval error", func() {
-			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
-				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(&cs.Container{ID: "id"}, nil),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().Names(gomock.Any()).
-					Return([]string{}, t.TestError),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().DeleteContainer(gomock.Any()).Return(t.TestError),
-			)
-
-			// When
-			_, err := sut.CreatePodSandbox(&types.SystemContext{},
-				"podName", "podID", "imagename", "",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
-				"containerName", "metadataName",
-				"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
-			)
-
-			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to create a pod sandbox on main creation error", func() {
 			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
+			pauseImage, err := references.ParseRegistryImageReferenceFromOutOfProcessData("imagename:latest")
+			Expect(err).ToNot(HaveOccurred())
+			mockutils.InOrder(
+				mockCreatePodSandboxImageExists(),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(nil, t.TestError),
 			)
 
 			// When
-			_, err := sut.CreatePodSandbox(&types.SystemContext{},
-				"podName", "podID", "imagename", "",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+			_, err = sut.CreatePodSandbox(&types.SystemContext{},
+				"podName", "podID", pauseImage, "",
 				"containerName", "metadataName",
 				"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to create a container on main creation error", func() {
 			// Given
-			inOrder(
-				mockCreateContainerOrPodSandboxImageExists(),
+			mockutils.InOrder(
+				mockCreateContainerImageExists(),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(nil, t.TestError),
@@ -731,25 +713,21 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to create a container on error accessing local image", func() {
 			// Given
-			inOrder(
+			mockutils.InOrder(
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				mockParseStoreReference(storeMock, "imagename"),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				mockGetStoreImage(storeMock, "docker.io/library/imagename:latest", "123"),
 				// storageReference.newImage:
-				mockResolveImage(storeMock, "docker.io/library/imagename:latest", "123"),
+				mockResolveImage(storeMock, "", imageID.IDStringForOutOfProcessConsumptionOnly(), imageID.IDStringForOutOfProcessConsumptionOnly()),
 				storeMock.EXPECT().ImageBigData(gomock.Any(), gomock.Any()).
 					Return(testManifest, nil),
 				storeMock.EXPECT().ListImageBigData(gomock.Any()).
@@ -760,43 +738,42 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			_, err := sut.CreateContainer(&types.SystemContext{},
-				"podName", "podID", "imagename",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", "imagename", imageID,
 				"containerName", "containerID", "metadataName",
 				0, nil, []string{"mountLabel"}, false,
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
 	t.Describe("pauseImage", func() {
+		pauseImage, err := references.ParseRegistryImageReferenceFromOutOfProcessData("pauseimagename:latest")
+		Expect(err).ToNot(HaveOccurred())
+
 		var info storage.ContainerInfo
-		var err error
 
 		mockCreatePodSandboxExpectingCopyOptions := func(expectedCopyOptions *storage.ImageCopyOptions) {
-			mockParseStoreReference(storeMock, "pauseimagename")
-			pulledRef, err := istorage.Transport.ParseStoreReference(storeMock, "pauseimagename")
-			Expect(err).To(BeNil())
-			inOrder(
+			pauseImageCanonical, err := references.ParseRegistryImageReferenceFromOutOfProcessData("pauseimagename@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+			Expect(err).ToNot(HaveOccurred())
+			mockutils.InOrder(
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				mockParseStoreReference(storeMock, "pauseimagename"),
+				mockResolveReference(storeMock, storageTransportMock,
+					"docker.io/library/pauseimagename:latest", "", ""),
+				imageServerMock.EXPECT().PullImage(gomock.Any(), pauseImage, expectedCopyOptions).Return(pauseImageCanonical, nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				mockGetStoreImage(storeMock, "docker.io/library/pauseimagename:latest", ""),
-				imageServerMock.EXPECT().PullImage(gomock.Any(), "pauseimagename", expectedCopyOptions).Return(pulledRef, nil),
+				mockResolveReference(storeMock, storageTransportMock,
+					"pauseimagename@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", imageID.IDStringForOutOfProcessConsumptionOnly()),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				mockGetStoreImage(storeMock, "docker.io/library/pauseimagename:latest", "123"),
-				mockNewImage(storeMock, "docker.io/library/pauseimagename:latest", "nonempty"),
+				mockNewImage(storeMock, "", imageID.IDStringForOutOfProcessConsumptionOnly(), imageID.IDStringForOutOfProcessConsumptionOnly()),
 
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().CreateContainer(gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					imageID.IDStringForOutOfProcessConsumptionOnly(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(&cs.Container{ID: "id"}, nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().Names(gomock.Any()).Return([]string{}, nil),
-				imageServerMock.EXPECT().GetStore().Return(storeMock),
-				storeMock.EXPECT().SetNames(gomock.Any(), gomock.Any()).Return(nil),
+				storeMock.EXPECT().AddNames(gomock.Any(), gomock.Any()).Return(nil),
 				imageServerMock.EXPECT().GetStore().Return(storeMock),
 				storeMock.EXPECT().ContainerDirectory(gomock.Any()).
 					Return("dir", nil),
@@ -808,7 +785,7 @@ var _ = t.Describe("Runtime", func() {
 
 		It("should pull pauseImage if not available locally, using default credentials", func() {
 			// The system under test
-			sut := storage.GetRuntimeService(context.Background(), imageServerMock)
+			sut := storage.GetRuntimeService(context.Background(), imageServerMock, storageTransportMock)
 			Expect(sut).NotTo(BeNil())
 
 			// Given
@@ -819,8 +796,7 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			info, err = sut.CreatePodSandbox(&types.SystemContext{},
-				"podName", "podID", "pauseimagename", "",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", pauseImage, "",
 				"containerName", "metadataName",
 				"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
 			)
@@ -828,7 +804,7 @@ var _ = t.Describe("Runtime", func() {
 
 		It("should pull pauseImage if not available locally, using provided credential file", func() {
 			// The system under test
-			sut := storage.GetRuntimeService(context.Background(), imageServerMock)
+			sut := storage.GetRuntimeService(context.Background(), imageServerMock, storageTransportMock)
 			Expect(sut).NotTo(BeNil())
 
 			// Given
@@ -839,8 +815,7 @@ var _ = t.Describe("Runtime", func() {
 
 			// When
 			info, err = sut.CreatePodSandbox(&types.SystemContext{},
-				"podName", "podID", "pauseimagename", "/var/non-default/credentials.json",
-				"8a788232037eaf17794408ff3df6b922a1aedf9ef8de36afdae3ed0b0381907b",
+				"podName", "podID", pauseImage, "/var/non-default/credentials.json",
 				"containerName", "metadataName",
 				"uid", "namespace", 0, nil, []string{"mountLabel"}, false,
 			)
@@ -848,7 +823,7 @@ var _ = t.Describe("Runtime", func() {
 
 		AfterEach(func() {
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(info).NotTo(BeNil())
 			Expect(info.ID).To(Equal("id"))
 			Expect(info.Dir).To(Equal("dir"))

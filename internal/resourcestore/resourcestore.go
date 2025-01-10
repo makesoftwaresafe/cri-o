@@ -1,14 +1,20 @@
 package resourcestore
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+
+	"github.com/cri-o/cri-o/internal/log"
 )
 
-const sleepTimeBeforeCleanup = 1 * time.Minute
+const (
+	sleepTimeBeforeCleanup = 1 * time.Minute
+	StageUnknown           = "unknown"
+)
 
 // ResourceStore is a structure that saves information about a recently created resource.
 // Resources can be added and retrieved from the store. A retrieval (Get) also removes the Resource from the store.
@@ -34,6 +40,7 @@ type Resource struct {
 	watchers []chan struct{}
 	stale    bool
 	name     string
+	stage    string
 }
 
 // wasPut checks that a resource has been fully defined yet.
@@ -51,7 +58,7 @@ type IdentifiableCreatable interface {
 	SetCreated()
 }
 
-// New creates a new ResourceStore, with a default timeout, and starts the cleanup function
+// New creates a new ResourceStore, with a default timeout, and starts the cleanup function.
 func New() *ResourceStore {
 	return NewWithTimeout(sleepTimeBeforeCleanup)
 }
@@ -159,7 +166,7 @@ func (rc *ResourceStore) Put(name string, resource IdentifiableCreatable, cleane
 	}
 	// make sure the resource hasn't already been added to the store
 	if ok && r.wasPut() {
-		return errors.Errorf("failed to add entry %s to ResourceStore; entry already exists", name)
+		return fmt.Errorf("failed to add entry %s to ResourceStore; entry already exists", name)
 	}
 
 	r.resource = resource
@@ -173,6 +180,15 @@ func (rc *ResourceStore) Put(name string, resource IdentifiableCreatable, cleane
 	return nil
 }
 
+// Delete deletes the specified resource from the store.
+// Any resource that has a stage set, but was never Put should have Delete called, or else it will leak.
+func (rc *ResourceStore) Delete(name string) {
+	rc.mutex.Lock()
+	defer rc.mutex.Unlock()
+
+	delete(rc.resources, name)
+}
+
 // WatcherForResource looks up a Resource by name, and gives it a watcher.
 // If no entry exists for that resource, a placeholder is created and a watcher is given to that
 // placeholder resource.
@@ -180,18 +196,35 @@ func (rc *ResourceStore) Put(name string, resource IdentifiableCreatable, cleane
 // This is useful for situations where clients retry requests quickly after they "fail" because
 // they've taken too long. Adding a watcher allows the server to slow down the client, but still
 // return the resource in a timely manner once it's actually created.
-func (rc *ResourceStore) WatcherForResource(name string) chan struct{} {
+func (rc *ResourceStore) WatcherForResource(name string) (watcher chan struct{}, stage string) {
 	rc.mutex.Lock()
 	defer rc.mutex.Unlock()
-	watcher := make(chan struct{}, 1)
+	watcher = make(chan struct{}, 1)
 	r, ok := rc.resources[name]
 	if !ok {
 		rc.resources[name] = &Resource{
 			watchers: []chan struct{}{watcher},
 			name:     name,
 		}
-		return watcher
+		return watcher, StageUnknown
 	}
 	r.watchers = append(r.watchers, watcher)
-	return watcher
+	return watcher, r.stage
+}
+
+func (rc *ResourceStore) SetStageForResource(ctx context.Context, name, stage string) {
+	rc.mutex.Lock()
+	defer rc.mutex.Unlock()
+	r, ok := rc.resources[name]
+	if !ok {
+		log.Debugf(ctx, "Initializing stage for resource %s to %s", name, stage)
+		rc.resources[name] = &Resource{
+			watchers: []chan struct{}{},
+			name:     name,
+			stage:    stage,
+		}
+		return
+	}
+	log.Debugf(ctx, "Setting stage for resource %s from %s to %s", name, r.stage, stage)
+	r.stage = stage
 }

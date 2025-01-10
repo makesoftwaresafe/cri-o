@@ -9,7 +9,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ContainerStart", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -30,7 +30,7 @@ var _ = t.Describe("ContainerStart", func() {
 				})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 		})
 
@@ -41,20 +41,20 @@ var _ = t.Describe("ContainerStart", func() {
 				&types.ExecRequest{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})
 
 	t.Describe("StreamServer: Exec", func() {
-		It("shoud fail when container not found", func() {
+		It("should fail when container not found", func() {
 			// Given
 			// When
-			err := testStreamService.Exec(testContainer.ID(), []string{},
+			err := testStreamService.Exec(context.Background(), testContainer.ID(), []string{},
 				nil, nil, nil, false, make(chan remotecommand.TerminalSize))
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

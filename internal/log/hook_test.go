@@ -1,10 +1,11 @@
 package log_test
 
 import (
-	"github.com/cri-o/cri-o/internal/log"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
+
+	"github.com/cri-o/cri-o/internal/log"
 )
 
 var _ = t.Describe("Hook", func() {
@@ -19,7 +20,7 @@ var _ = t.Describe("Hook", func() {
 		BeforeEach(func() {
 			logger = logrus.New()
 			filterHook, err := log.NewFilterHook("")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(filterHook).NotTo(BeNil())
 			fileNameHook := log.NewFilenameHook()
 			Expect(fileNameHook).NotTo(BeNil())

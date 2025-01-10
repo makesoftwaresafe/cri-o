@@ -6,7 +6,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Server", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -27,7 +27,7 @@ var _ = t.Describe("Server", func() {
 				})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(name).NotTo(BeEmpty())
 		})
 
@@ -37,7 +37,7 @@ var _ = t.Describe("Server", func() {
 			name, err := sut.ReserveSandboxContainerIDAndName(nil)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(name).To(BeEmpty())
 		})
 
@@ -47,7 +47,7 @@ var _ = t.Describe("Server", func() {
 			name, err := sut.ReserveSandboxContainerIDAndName(&types.PodSandboxConfig{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(name).To(BeEmpty())
 		})
 
@@ -59,14 +59,14 @@ var _ = t.Describe("Server", func() {
 			}
 			_, err := sut.ReserveSandboxContainerIDAndName(
 				&types.PodSandboxConfig{Metadata: metadata})
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			name, err := sut.ReserveSandboxContainerIDAndName(
 				&types.PodSandboxConfig{Metadata: metadata})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(name).To(BeEmpty())
 		})
 	})

@@ -3,14 +3,14 @@ package server_test
 import (
 	"context"
 
-	"github.com/cri-o/cri-o/internal/oci"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/oci"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ContainerStats", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -28,7 +28,7 @@ var _ = t.Describe("ContainerStats", func() {
 				&types.ContainerStatsRequest{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})
@@ -47,16 +47,15 @@ var _ = t.Describe("ContainerStatsList", func() {
 		It("should succeed", func() {
 			// Given
 			addContainerAndSandbox()
-			storeMock.EXPECT().GraphDriver().Return(nil, errors.New("not implemented"))
 
 			// When
 			response, err := sut.ListContainerStats(context.Background(),
 				&types.ListContainerStatsRequest{})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
-			Expect(len(response.Stats)).To(Equal(1))
+			Expect(response.Stats).To(BeEmpty())
 		})
 		It("should filter stopped container", func() {
 			// Given
@@ -71,9 +70,9 @@ var _ = t.Describe("ContainerStatsList", func() {
 			)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
-			Expect(len(response.Stats)).To(Equal(0))
+			Expect(response.Stats).To(BeEmpty())
 		})
 		It("should filter by id", func() {
 			// Given
@@ -89,9 +88,9 @@ var _ = t.Describe("ContainerStatsList", func() {
 			)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
-			Expect(len(response.Stats)).To(Equal(0))
+			Expect(response.Stats).To(BeEmpty())
 		})
 	})
 })

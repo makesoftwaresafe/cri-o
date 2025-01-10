@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-set -e
+set -xe
 
 TEST_USERNS=${TEST_USERNS:-}
 TEST_KEEP_ON_FAILURE=${TEST_KEEP_ON_FAILURE:-}
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
-if [[ -n "$TEST_USERNS" ]]; then
+if [[ "$TEST_USERNS" == "1" ]]; then
     echo "Enabled user namespace testing"
     export \
         CONTAINER_UID_MAPPINGS="0:100000:100000" \
@@ -18,8 +18,11 @@ if [[ -n "$TEST_USERNS" ]]; then
     fi
 fi
 
-# Load the helpers.
-. helpers.bash
+# Preload images.
+(
+    . common.sh
+    get_images
+)
 
 function execute() {
     echo >&2 ++ "$@"
@@ -29,8 +32,15 @@ function execute() {
 # Tests to run. Default is "." (i.e. the current directory).
 TESTS=("${@:-.}")
 
-# The number of parallel jobs to execute
-export JOBS=${JOBS:-$(($(nproc --all) * 4))}
+# Only run critest if requested
+if [[ "$RUN_CRITEST" == "1" ]]; then
+    TESTS=(critest.bats)
+fi
+
+# The number of parallel jobs to execute tests
+export JOBS=${JOBS:-$(nproc --all)}
+
+bats --version
 
 # Run the tests.
 execute bats --jobs "$JOBS" --tap "${TESTS[@]}"

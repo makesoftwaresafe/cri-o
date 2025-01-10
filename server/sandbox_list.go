@@ -1,15 +1,19 @@
 package server
 
 import (
-	"github.com/cri-o/cri-o/internal/lib/sandbox"
-	"github.com/cri-o/cri-o/internal/log"
-	"golang.org/x/net/context"
+	"context"
+
 	"k8s.io/apimachinery/pkg/fields"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/log"
 )
 
 // ListPodSandbox returns a list of SandBoxes.
 func (s *Server) ListPodSandbox(ctx context.Context, req *types.ListPodSandboxRequest) (*types.ListPodSandboxResponse, error) {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
 	podList := s.filterSandboxList(ctx, req.Filter, s.ContainerServer.ListSandboxes())
 	respList := make([]*types.PodSandbox, 0, len(podList))
 
@@ -20,8 +24,6 @@ func (s *Server) ListPodSandbox(ctx context.Context, req *types.ListPodSandboxRe
 		}
 
 		pod := sb.CRISandbox()
-		pod.State = sb.State()
-
 		// Filter by other criteria such as state and labels.
 		if filterSandbox(pod, req.Filter) {
 			respList = append(respList, pod)
@@ -36,6 +38,9 @@ func (s *Server) ListPodSandbox(ctx context.Context, req *types.ListPodSandboxRe
 // filterSandboxList applies a protobuf-defined filter to retrieve only intended pod sandboxes. Not matching
 // the filter is not considered an error but will return an empty response.
 func (s *Server) filterSandboxList(ctx context.Context, filter *types.PodSandboxFilter, podList []*sandbox.Sandbox) []*sandbox.Sandbox {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
 	// Filter by pod id first.
 	if filter == nil {
 		return podList
@@ -49,7 +54,7 @@ func (s *Server) filterSandboxList(ctx context.Context, filter *types.PodSandbox
 			log.Warnf(ctx, "Unable to find pod %s with filter", filter.Id)
 			return []*sandbox.Sandbox{}
 		}
-		sb := s.getSandbox(id)
+		sb := s.getSandbox(ctx, id)
 		if sb == nil {
 			podList = []*sandbox.Sandbox{}
 		} else {
@@ -79,7 +84,7 @@ func (s *Server) filterSandboxList(ctx context.Context, filter *types.PodSandbox
 	return finalList
 }
 
-// filterSandbox returns whether passed container matches filtering criteria
+// filterSandbox returns whether passed container matches filtering criteria.
 func filterSandbox(p *types.PodSandbox, filter *types.PodSandboxFilter) bool {
 	if filter != nil {
 		if filter.State != nil {

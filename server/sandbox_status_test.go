@@ -3,14 +3,15 @@ package server_test
 import (
 	"context"
 
-	"github.com/cri-o/cri-o/internal/oci"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/oci"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("PodSandboxStatus", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -33,7 +34,7 @@ var _ = t.Describe("PodSandboxStatus", func() {
 				&types.PodSandboxStatusRequest{PodSandboxId: testSandbox.ID()})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 		})
 
@@ -54,7 +55,7 @@ var _ = t.Describe("PodSandboxStatus", func() {
 				&types.PodSandboxStatusRequest{PodSandboxId: testSandbox.ID()})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 			Expect(response.Status.Network.Ip).To(Equal(ipv4))
 			Expect(response.Status.Network.AdditionalIps).To(HaveLen(1))
@@ -68,7 +69,7 @@ var _ = t.Describe("PodSandboxStatus", func() {
 				&types.PodSandboxStatusRequest{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 
@@ -85,7 +86,7 @@ var _ = t.Describe("PodSandboxStatus", func() {
 				&types.PodSandboxStatusRequest{PodSandboxId: testSandbox.ID(), Verbose: true})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 			Expect(response.Info).NotTo(BeNil())
 			Expect(response.Info["info"]).To(ContainSubstring(`"ociVersion":"1.0.0"`))

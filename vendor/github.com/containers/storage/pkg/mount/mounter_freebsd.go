@@ -1,5 +1,4 @@
 //go:build freebsd && cgo
-// +build freebsd,cgo
 
 package mount
 
@@ -40,13 +39,9 @@ func mount(device, target, mType string, flag uintptr, data string) error {
 				isNullFS = true
 				continue
 			}
-			opt := strings.SplitN(x, "=", 2)
-			options = append(options, opt[0])
-			if len(opt) == 2 {
-				options = append(options, opt[1])
-			} else {
-				options = append(options, "")
-			}
+			name, val, _ := strings.Cut(x, "=")
+			options = append(options, name)
+			options = append(options, val)
 		}
 	}
 
@@ -62,7 +57,7 @@ func mount(device, target, mType string, flag uintptr, data string) error {
 
 	if errno := C.nmount(&rawOptions[0], C.uint(len(options)), C.int(flag)); errno != 0 {
 		reason := C.GoString(C.strerror(*C.__error()))
-		return fmt.Errorf("Failed to call nmount: %s", reason)
+		return fmt.Errorf("failed to call nmount: %s", reason)
 	}
 	return nil
 }

@@ -119,9 +119,7 @@ function teardown() {
 
 	start_crio
 
-	run crictl stop "$ctr_id"
-	[ "$status" -eq 1 ]
-	[[ "${output}" == *"not found"* ]]
+	crictl stop "$ctr_id"
 }
 
 @test "crio restore with bad state and pod removed" {
@@ -172,8 +170,7 @@ function teardown() {
 
 	output=$(crictl inspect -o table "$ctr_id")
 	[[ "${output}" == *"CONTAINER_EXITED"* ]]
-	# TODO: may be cri-tool should display Exit Code
-	#[[ "${output}" == *"Exit Code: 255"* ]]
+	[[ "${output}" == *"Exit Code: 137"* ]]
 
 	crictl stopp "$pod_id"
 	crictl rmp "$pod_id"
@@ -194,7 +191,7 @@ function teardown() {
 
 	start_crio
 
-	! crictl inspect "$ctr_id"
+	run ! crictl inspect "$ctr_id"
 
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
@@ -204,7 +201,7 @@ function teardown() {
 }
 
 @test "crio restore first not managing then managing" {
-	CONTAINER_MANAGE_NS_LIFECYCLE=false CONTAINER_DROP_INFRA_CTR=false start_crio
+	CONTAINER_DROP_INFRA_CTR=false start_crio
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	pod_list_info=$(crictl pods --quiet --id "$pod_id")
 
@@ -221,7 +218,7 @@ function teardown() {
 
 	stop_crio
 
-	CONTAINER_MANAGE_NS_LIFECYCLE=true start_crio
+	start_crio
 	output=$(crictl pods --quiet)
 	[[ "${output}" == "${pod_id}" ]]
 
@@ -246,7 +243,7 @@ function teardown() {
 }
 
 @test "crio restore first managing then not managing" {
-	CONTAINER_MANAGE_NS_LIFECYCLE=true CONTAINER_DROP_INFRA_CTR=true start_crio
+	CONTAINER_DROP_INFRA_CTR=true start_crio
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	pod_list_info=$(crictl pods --quiet --id "$pod_id")
 
@@ -262,7 +259,7 @@ function teardown() {
 
 	stop_crio
 
-	CONTAINER_MANAGE_NS_LIFECYCLE=false CONTAINER_DROP_INFRA_CTR=false start_crio
+	CONTAINER_DROP_INFRA_CTR=false start_crio
 	output=$(crictl pods --quiet)
 	[[ "${output}" == "${pod_id}" ]]
 
@@ -287,7 +284,7 @@ function teardown() {
 }
 
 @test "crio restore changing managing dir" {
-	CONTAINER_MANAGE_NS_LIFECYCLE=true CONTAINER_NAMESPACE_DIR="$TESTDIR/ns1" start_crio
+	CONTAINER_NAMESPACE_DIR="$TESTDIR/ns1" start_crio
 	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
 	pod_list_info=$(crictl pods --quiet --id "$pod_id")
 
@@ -302,7 +299,7 @@ function teardown() {
 
 	stop_crio
 
-	CONTAINER_MANAGE_NS_LIFECYCLE=true CONTAINER_NAMESPACE_DIR="$TESTDIR/ns2" start_crio
+	CONTAINER_NAMESPACE_DIR="$TESTDIR/ns2" start_crio
 	output=$(crictl pods --quiet)
 	[[ "${output}" == "${pod_id}" ]]
 
@@ -323,4 +320,110 @@ function teardown() {
 
 	output=$(crictl inspect -o table "$ctr_id" | grep ^State)
 	[[ "${output}" == "${ctr_status_info}" ]]
+}
+
+@test "crio restore upon entering KUBENSMNT" {
+	start_crio
+	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
+	pod_list_info=$(crictl pods --quiet --id "$pod_id")
+
+	output=$(crictl inspectp -o json "$pod_id")
+	[[ -n "$output" ]]
+	pod_status_info=$(jq ".status.state" <<< "$output")
+	pod_ip=$(jq ".status.ip" <<< "$output")
+	pod_created_at=$(jq ".status.createdAt" <<< "$output")
+
+	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
+	ctr_list_info=$(crictl ps --quiet --id "$ctr_id" --all)
+	output=$(crictl inspect -o table "$ctr_id")
+	ctr_status_info=$(grep ^State <<< "$output")
+
+	stop_crio
+
+	setup_kubensmnt
+	start_crio
+	output=$(crictl pods --quiet)
+	[[ "${output}" == "${pod_id}" ]]
+
+	output=$(crictl pods --quiet --id "$pod_id")
+	[[ "${output}" == "${pod_list_info}" ]]
+
+	output=$(crictl inspectp -o json "$pod_id")
+	status_output=$(jq ".status.state" <<< "$output")
+	ip_output=$(jq ".status.ip" <<< "$output")
+	created_at_output=$(jq ".status.createdAt" <<< "$output")
+	[[ "${status_output}" == "${pod_status_info}" ]]
+	[[ "${ip_output}" == "${pod_ip}" ]]
+	[[ "${created_at_output}" == "${pod_created_at}" ]]
+
+	output=$(crictl ps --quiet --all)
+	[[ "${output}" == "${ctr_id}" ]]
+
+	output=$(crictl ps --quiet --id "$ctr_id" --all)
+	[[ "${output}" == "${ctr_list_info}" ]]
+
+	output=$(crictl inspect -o table "$ctr_id" | grep ^State)
+	[[ "${output}" == "${ctr_status_info}" ]]
+}
+
+@test "crio restore upon exiting KUBENSMNT" {
+	setup_kubensmnt
+	start_crio
+	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
+	pod_list_info=$(crictl pods --quiet --id "$pod_id")
+
+	output=$(crictl inspectp -o json "$pod_id")
+	[[ -n "$output" ]]
+	pod_status_info=$(jq ".status.state" <<< "$output")
+	pod_ip=$(jq ".status.ip" <<< "$output")
+	pod_created_at=$(jq ".status.createdAt" <<< "$output")
+
+	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
+	ctr_list_info=$(crictl ps --quiet --id "$ctr_id" --all)
+	output=$(crictl inspect -o table "$ctr_id")
+	ctr_status_info=$(grep ^State <<< "$output")
+
+	stop_crio
+
+	unset KUBENSMNT
+	start_crio
+	output=$(crictl pods --quiet)
+	[[ "${output}" == "${pod_id}" ]]
+
+	output=$(crictl pods --quiet --id "$pod_id")
+	[[ "${output}" == "${pod_list_info}" ]]
+
+	output=$(crictl inspectp -o json "$pod_id")
+	status_output=$(jq ".status.state" <<< "$output")
+	ip_output=$(jq ".status.ip" <<< "$output")
+	created_at_output=$(jq ".status.createdAt" <<< "$output")
+	[[ "${status_output}" == "${pod_status_info}" ]]
+	[[ "${ip_output}" == "${pod_ip}" ]]
+	[[ "${created_at_output}" == "${pod_created_at}" ]]
+
+	output=$(crictl ps --quiet --all)
+	[[ "${output}" == "${ctr_id}" ]]
+
+	output=$(crictl ps --quiet --id "$ctr_id" --all)
+	[[ "${output}" == "${ctr_list_info}" ]]
+
+	output=$(crictl inspect -o table "$ctr_id" | grep ^State)
+	[[ "${output}" == "${ctr_status_info}" ]]
+}
+
+@test "crio restore volumes for containers" {
+	start_crio
+
+	jq --arg path "$TESTDIR" \
+		'.mounts = [{
+			host_path: $path,
+			container_path: "/host"
+		}]' \
+		"$TESTDATA/container_redis.json" > "$TESTDIR/container.json"
+	ctr_id=$(crictl run "$TESTDIR/container.json" "$TESTDATA/sandbox_config.json")
+	crictl inspect "$ctr_id" | jq -e '.status.mounts != []'
+
+	stop_crio
+	start_crio
+	crictl inspect "$ctr_id" | jq -e '.status.mounts != []'
 }

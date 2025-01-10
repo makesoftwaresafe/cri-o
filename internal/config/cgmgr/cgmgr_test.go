@@ -3,9 +3,10 @@ package cgmgr_test
 import (
 	"path/filepath"
 
-	"github.com/cri-o/cri-o/internal/config/cgmgr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/internal/config/cgmgr"
 )
 
 const (
@@ -16,7 +17,7 @@ const (
 	cgroupfsManager      = "cgroupfs"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Cgmgr", func() {
 	var sut cgmgr.CgroupManager
 
@@ -40,7 +41,7 @@ var _ = t.Describe("Cgmgr", func() {
 
 			// Then
 			Expect(sut).To(Not(BeNil()))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 		It("should be able to be set to systemd", func() {
 			// Given
@@ -50,7 +51,7 @@ var _ = t.Describe("Cgmgr", func() {
 
 			// Then
 			Expect(sut).To(Not(BeNil()))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 		It("should fail when invalid", func() {
 			// Given
@@ -60,7 +61,7 @@ var _ = t.Describe("Cgmgr", func() {
 
 			// Then
 			Expect(sut).To(BeNil())
-			Expect(err).To(Not(BeNil()))
+			Expect(err).To(HaveOccurred())
 		})
 	})
 	t.Describe("Name", func() {
@@ -77,7 +78,7 @@ var _ = t.Describe("Cgmgr", func() {
 			var err error
 			sut, err = cgmgr.SetCgroupManager(cgroupfsManager)
 			Expect(sut).To(Not(BeNil()))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			name := sut.Name()
 
@@ -92,19 +93,19 @@ var _ = t.Describe("Cgmgr", func() {
 			res := sut.IsSystemd()
 
 			// Then
-			Expect(res).To(Equal(true))
+			Expect(res).To(BeTrue())
 		})
 		It("should be able to be set to cgroupfs", func() {
 			// Given
 			var err error
 			sut, err = cgmgr.SetCgroupManager(cgroupfsManager)
 			Expect(sut).To(Not(BeNil()))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			res := sut.IsSystemd()
 
 			// Then
-			Expect(res).To(Equal(false))
+			Expect(res).To(BeFalse())
 		})
 	})
 	t.Describe("CgroupfsManager", func() {
@@ -136,23 +137,23 @@ var _ = t.Describe("Cgmgr", func() {
 				// Given
 				sbParent := "sandbox-parent.slice"
 				// When
-				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID)
+				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID, int64(0))
 
 				// Then
 				Expect(cgParent).To(BeEmpty())
 				Expect(cgPath).To(BeEmpty())
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
 			})
 			It("can override sandbox parent", func() {
 				// Given
 				// When
-				cgParent, cgPath, err := sut.SandboxCgroupPath(genericSandboxParent, sbID)
+				cgParent, cgPath, err := sut.SandboxCgroupPath(genericSandboxParent, sbID, int64(0))
 
 				// Then
 				Expect(cgParent).To(Equal(genericSandboxParent))
 				Expect(cgPath).To(ContainSubstring(genericSandboxParent))
 				Expect(cgPath).To(ContainSubstring(sbID))
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			})
 		})
 		t.Describe("MoveConmonToCgroup", func() {
@@ -164,7 +165,7 @@ var _ = t.Describe("Cgmgr", func() {
 
 				// Then
 				Expect(cgPath).To(BeEmpty())
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
@@ -195,7 +196,7 @@ var _ = t.Describe("Cgmgr", func() {
 				// When
 				cgroupPath, err := sut.ContainerCgroupAbsolutePath("", cID)
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(cgroupPath).To(ContainSubstring(cID))
 				Expect(cgroupPath).To(ContainSubstring("system.slice"))
 			})
@@ -204,7 +205,7 @@ var _ = t.Describe("Cgmgr", func() {
 				// When
 				cgroupPath, err := sut.ContainerCgroupAbsolutePath("", cID)
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(filepath.IsAbs(cgroupPath)).To(BeTrue())
 			})
 			It("should fail to expand slice", func() {
@@ -212,7 +213,7 @@ var _ = t.Describe("Cgmgr", func() {
 				// When
 				cgroupPath, err := sut.ContainerCgroupAbsolutePath("::::", cID)
 				// Then
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
 				Expect(cgroupPath).To(Equal(""))
 			})
 		})
@@ -221,23 +222,37 @@ var _ = t.Describe("Cgmgr", func() {
 				// Given
 				sbParent := "slice"
 				// When
-				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID)
+				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID, int64(0))
 
 				// Then
 				Expect(cgParent).To(BeEmpty())
 				Expect(cgPath).To(BeEmpty())
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
 			})
 			It("should fail when parent not slice", func() {
 				// Given
 				sbParent := "systemd.invalid"
 				// When
-				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID)
+				cgParent, cgPath, err := sut.SandboxCgroupPath(sbParent, sbID, int64(0))
 
 				// Then
 				Expect(cgParent).To(BeEmpty())
 				Expect(cgPath).To(BeEmpty())
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
+			})
+			It("should fail container minimum memory limit check", func() {
+				// When
+				err := cgmgr.VerifyMemoryIsEnough(100, 200)
+
+				// Then
+				Expect(err).To(HaveOccurred())
+			})
+			It("should not fail container minimum memory limit check", func() {
+				// When
+				err := cgmgr.VerifyMemoryIsEnough(151, 150)
+
+				// Then
+				Expect(err).ToNot(HaveOccurred())
 			})
 		})
 		t.Describe("MoveConmonToCgroup", func() {
@@ -249,7 +264,7 @@ var _ = t.Describe("Cgmgr", func() {
 
 				// Then
 				Expect(cgPath).To(BeEmpty())
-				Expect(err).To(Not(BeNil()))
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})

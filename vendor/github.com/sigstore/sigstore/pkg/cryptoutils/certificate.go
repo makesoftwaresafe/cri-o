@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package cryptoutils implements support for working with encoded certificates, public keys, and private keys
 package cryptoutils
 
 import (
@@ -58,6 +59,7 @@ func MarshalCertificatesToPEM(certs []*x509.Certificate) ([]byte, error) {
 func UnmarshalCertificatesFromPEM(pemBytes []byte) ([]*x509.Certificate, error) {
 	result := []*x509.Certificate{}
 	remaining := pemBytes
+	remaining = bytes.TrimSpace(remaining)
 
 	for len(remaining) > 0 {
 		var certDer *pem.Block
@@ -72,6 +74,36 @@ func UnmarshalCertificatesFromPEM(pemBytes []byte) ([]*x509.Certificate, error) 
 			return nil, err
 		}
 		result = append(result, cert)
+	}
+	return result, nil
+}
+
+// UnmarshalCertificatesFromPEMLimited extracts one or more X509 certificates from the provided
+// byte slice, which is assumed to be in PEM-encoded format. Fails after a specified
+// number of iterations. A reasonable limit is 10 iterations.
+func UnmarshalCertificatesFromPEMLimited(pemBytes []byte, iterations int) ([]*x509.Certificate, error) {
+	result := []*x509.Certificate{}
+	remaining := pemBytes
+	remaining = bytes.TrimSpace(remaining)
+
+	count := 0
+	for len(remaining) > 0 {
+		if count == iterations {
+			return nil, errors.New("too many certificates specified in PEM block")
+		}
+		var certDer *pem.Block
+		certDer, remaining = pem.Decode(remaining)
+
+		if certDer == nil {
+			return nil, errors.New("error during PEM decoding")
+		}
+
+		cert, err := x509.ParseCertificate(certDer.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, cert)
+		count++
 	}
 	return result, nil
 }

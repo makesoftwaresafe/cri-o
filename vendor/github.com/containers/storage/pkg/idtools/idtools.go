@@ -2,10 +2,11 @@ package idtools
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/user"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"syscall"
 
 	"github.com/containers/storage/pkg/system"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -38,8 +38,9 @@ func (e ranges) Swap(i, j int)      { e[i], e[j] = e[j], e[i] }
 func (e ranges) Less(i, j int) bool { return e[i].Start < e[j].Start }
 
 const (
-	subuidFileName string = "/etc/subuid"
-	subgidFileName string = "/etc/subgid"
+	subuidFileName          string = "/etc/subuid"
+	subgidFileName          string = "/etc/subgid"
+	ContainersOverrideXattr        = "user.containers.override_stat"
 )
 
 // MkdirAllAs creates a directory (include any along the path) and then modifies
@@ -118,7 +119,7 @@ func RawToContainer(hostID int, idMap []IDMap) (int, error) {
 			return contID, nil
 		}
 	}
-	return -1, fmt.Errorf("Host ID %d cannot be mapped to a container ID", hostID)
+	return -1, fmt.Errorf("host ID %d cannot be mapped to a container ID", hostID)
 }
 
 // RawToHost takes an id mapping and a remapped ID, and translates the ID to
@@ -138,7 +139,7 @@ func RawToHost(contID int, idMap []IDMap) (int, error) {
 			return hostID, nil
 		}
 	}
-	return -1, fmt.Errorf("Container ID %d cannot be mapped to a host ID", contID)
+	return -1, fmt.Errorf("container ID %d cannot be mapped to a host ID", contID)
 }
 
 // IDPair is a UID and GID pair
@@ -166,10 +167,10 @@ func NewIDMappings(username, groupname string) (*IDMappings, error) {
 		return nil, err
 	}
 	if len(subuidRanges) == 0 {
-		return nil, fmt.Errorf("No subuid ranges found for user %q in %s", username, subuidFileName)
+		return nil, fmt.Errorf("no subuid ranges found for user %q in %s", username, subuidFileName)
 	}
 	if len(subgidRanges) == 0 {
-		return nil, fmt.Errorf("No subgid ranges found for group %q in %s", groupname, subgidFileName)
+		return nil, fmt.Errorf("no subgid ranges found for group %q in %s", groupname, subgidFileName)
 	}
 
 	return &IDMappings{
@@ -218,7 +219,7 @@ func getOverflowUID() int {
 	overflowUIDOnce.Do(func() {
 		// 65534 is the value on older kernels where /proc/sys/kernel/overflowuid is not present
 		overflowUID = 65534
-		if content, err := ioutil.ReadFile("/proc/sys/kernel/overflowuid"); err == nil {
+		if content, err := os.ReadFile("/proc/sys/kernel/overflowuid"); err == nil {
 			if tmp, err := strconv.Atoi(string(content)); err == nil {
 				overflowUID = tmp
 			}
@@ -227,12 +228,12 @@ func getOverflowUID() int {
 	return overflowUID
 }
 
-// getOverflowUID returns the GID mapped to the overflow user
+// getOverflowGID returns the GID mapped to the overflow user
 func getOverflowGID() int {
 	overflowGIDOnce.Do(func() {
 		// 65534 is the value on older kernels where /proc/sys/kernel/overflowgid is not present
 		overflowGID = 65534
-		if content, err := ioutil.ReadFile("/proc/sys/kernel/overflowgid"); err == nil {
+		if content, err := os.ReadFile("/proc/sys/kernel/overflowgid"); err == nil {
 			if tmp, err := strconv.Atoi(string(content)); err == nil {
 				overflowGID = tmp
 			}
@@ -341,16 +342,16 @@ func parseSubidFile(path, username string) (ranges, error) {
 		}
 		parts := strings.Split(text, ":")
 		if len(parts) != 3 {
-			return rangeList, fmt.Errorf("Cannot parse subuid/gid information: Format not correct for %s file", path)
+			return rangeList, fmt.Errorf("cannot parse subuid/gid information: Format not correct for %s file", path)
 		}
 		if parts[0] == username || username == "ALL" || (parts[0] == uidstr && parts[0] != "") {
 			startid, err := strconv.Atoi(parts[1])
 			if err != nil {
-				return rangeList, fmt.Errorf("String to int conversion failed during subuid/gid parsing of %s: %v", path, err)
+				return rangeList, fmt.Errorf("string to int conversion failed during subuid/gid parsing of %s: %w", path, err)
 			}
 			length, err := strconv.Atoi(parts[2])
 			if err != nil {
-				return rangeList, fmt.Errorf("String to int conversion failed during subuid/gid parsing of %s: %v", path, err)
+				return rangeList, fmt.Errorf("string to int conversion failed during subuid/gid parsing of %s: %w", path, err)
 			}
 			rangeList = append(rangeList, subIDRange{startid, length})
 		}
@@ -359,13 +360,89 @@ func parseSubidFile(path, username string) (ranges, error) {
 }
 
 func checkChownErr(err error, name string, uid, gid int) error {
-	if e, ok := err.(*os.PathError); ok && e.Err == syscall.EINVAL {
-		return errors.Wrapf(err, "potentially insufficient UIDs or GIDs available in user namespace (requested %d:%d for %s): Check /etc/subuid and /etc/subgid if configured locally and run podman-system-migrate", uid, gid, name)
+	var e *os.PathError
+	if errors.As(err, &e) && e.Err == syscall.EINVAL {
+		return fmt.Errorf(`potentially insufficient UIDs or GIDs available in user namespace (requested %d:%d for %s): Check /etc/subuid and /etc/subgid if configured locally and run "podman system migrate": %w`, uid, gid, name, err)
 	}
 	return err
 }
 
+// Stat contains file states that can be overridden with ContainersOverrideXattr.
+type Stat struct {
+	IDs  IDPair
+	Mode os.FileMode
+}
+
+// FormatContainersOverrideXattr will format the given uid, gid, and mode into a string
+// that can be used as the value for the ContainersOverrideXattr xattr.
+func FormatContainersOverrideXattr(uid, gid, mode int) string {
+	return fmt.Sprintf("%d:%d:0%o", uid, gid, mode&0o7777)
+}
+
+// GetContainersOverrideXattr will get and decode ContainersOverrideXattr.
+func GetContainersOverrideXattr(path string) (Stat, error) {
+	var stat Stat
+	xstat, err := system.Lgetxattr(path, ContainersOverrideXattr)
+	if err != nil {
+		return stat, err
+	}
+
+	attrs := strings.Split(string(xstat), ":")
+	if len(attrs) != 3 {
+		return stat, fmt.Errorf("The number of clons in %s does not equal to 3",
+			ContainersOverrideXattr)
+	}
+
+	value, err := strconv.ParseUint(attrs[0], 10, 32)
+	if err != nil {
+		return stat, fmt.Errorf("Failed to parse UID: %w", err)
+	}
+
+	stat.IDs.UID = int(value)
+
+	value, err = strconv.ParseUint(attrs[0], 10, 32)
+	if err != nil {
+		return stat, fmt.Errorf("Failed to parse GID: %w", err)
+	}
+
+	stat.IDs.GID = int(value)
+
+	value, err = strconv.ParseUint(attrs[2], 8, 32)
+	if err != nil {
+		return stat, fmt.Errorf("Failed to parse mode: %w", err)
+	}
+
+	stat.Mode = os.FileMode(value)
+
+	return stat, nil
+}
+
+// SetContainersOverrideXattr will encode and set ContainersOverrideXattr.
+func SetContainersOverrideXattr(path string, stat Stat) error {
+	value := FormatContainersOverrideXattr(stat.IDs.UID, stat.IDs.GID, int(stat.Mode))
+	return system.Lsetxattr(path, ContainersOverrideXattr, []byte(value), 0)
+}
+
 func SafeChown(name string, uid, gid int) error {
+	if runtime.GOOS == "darwin" {
+		var mode os.FileMode = 0o0700
+		xstat, err := system.Lgetxattr(name, ContainersOverrideXattr)
+		if err == nil {
+			attrs := strings.Split(string(xstat), ":")
+			if len(attrs) == 3 {
+				val, err := strconv.ParseUint(attrs[2], 8, 32)
+				if err == nil {
+					mode = os.FileMode(val)
+				}
+			}
+		}
+		value := Stat{IDPair{uid, gid}, mode}
+		if err = SetContainersOverrideXattr(name, value); err != nil {
+			return err
+		}
+		uid = os.Getuid()
+		gid = os.Getgid()
+	}
 	if stat, statErr := system.Stat(name); statErr == nil {
 		if stat.UID() == uint32(uid) && stat.GID() == uint32(gid) {
 			return nil
@@ -375,6 +452,25 @@ func SafeChown(name string, uid, gid int) error {
 }
 
 func SafeLchown(name string, uid, gid int) error {
+	if runtime.GOOS == "darwin" {
+		var mode os.FileMode = 0o0700
+		xstat, err := system.Lgetxattr(name, ContainersOverrideXattr)
+		if err == nil {
+			attrs := strings.Split(string(xstat), ":")
+			if len(attrs) == 3 {
+				val, err := strconv.ParseUint(attrs[2], 8, 32)
+				if err == nil {
+					mode = os.FileMode(val)
+				}
+			}
+		}
+		value := Stat{IDPair{uid, gid}, mode}
+		if err = SetContainersOverrideXattr(name, value); err != nil {
+			return err
+		}
+		uid = os.Getuid()
+		gid = os.Getgid()
+	}
 	if stat, statErr := system.Lstat(name); statErr == nil {
 		if stat.UID() == uint32(uid) && stat.GID() == uint32(gid) {
 			return nil

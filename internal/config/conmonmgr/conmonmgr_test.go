@@ -1,17 +1,19 @@
 package conmonmgr
 
 import (
-	runnerMock "github.com/cri-o/cri-o/test/mocks/cmdrunner"
-	"github.com/cri-o/cri-o/utils/cmdrunner"
-	"github.com/golang/mock/gomock"
+	"errors"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
+	"go.uber.org/mock/gomock"
+
+	runnerMock "github.com/cri-o/cri-o/test/mocks/cmdrunner"
+	"github.com/cri-o/cri-o/utils/cmdrunner"
 )
 
 const validPath = "/bin/ls"
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ConmonManager", func() {
 	var runner *runnerMock.MockCommandRunner
 	t.Describe("New", func() {
@@ -25,7 +27,7 @@ var _ = t.Describe("ConmonManager", func() {
 			mgr, err := New("")
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mgr).To(BeNil())
 		})
 		It("should fail when command fails", func() {
@@ -38,7 +40,7 @@ var _ = t.Describe("ConmonManager", func() {
 			mgr, err := New(validPath)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mgr).To(BeNil())
 		})
 		It("should fail when output unexpected", func() {
@@ -51,7 +53,7 @@ var _ = t.Describe("ConmonManager", func() {
 			mgr, err := New(validPath)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(mgr).To(BeNil())
 		})
 		It("should succeed when output expected", func() {
@@ -64,7 +66,7 @@ var _ = t.Describe("ConmonManager", func() {
 			mgr, err := New(validPath)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(mgr).ToNot(BeNil())
 		})
 		It("should succeed when output expected", func() {
@@ -77,7 +79,7 @@ var _ = t.Describe("ConmonManager", func() {
 			mgr, err := New(validPath)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(mgr).ToNot(BeNil())
 		})
 	})
@@ -90,13 +92,13 @@ var _ = t.Describe("ConmonManager", func() {
 			// When
 			err := mgr.parseConmonVersion("invalid.0.0")
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should succeed when all are numbers", func() {
 			// When
 			err := mgr.parseConmonVersion("0.0.0")
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 	t.Describe("initializeSupportsSync", func() {
@@ -107,67 +109,67 @@ var _ = t.Describe("ConmonManager", func() {
 		It("should be false when major version less", func() {
 			// Given
 			err := mgr.parseConmonVersion("1.0.19")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(false))
+			Expect(mgr.SupportsSync()).To(BeFalse())
 		})
 		It("should be true when major version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("3.0.19")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(true))
+			Expect(mgr.SupportsSync()).To(BeTrue())
 		})
 		It("should be true when minor version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.1.18")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(true))
+			Expect(mgr.SupportsSync()).To(BeTrue())
 		})
 		It("should be false when patch version less", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.0.18")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(false))
+			Expect(mgr.SupportsSync()).To(BeFalse())
 		})
 		It("should be true when patch version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.0.20")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(true))
+			Expect(mgr.SupportsSync()).To(BeTrue())
 		})
 		It("should be true when version equal", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.0.19")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsSync()
 
 			// Then
-			Expect(mgr.SupportsSync()).To(Equal(true))
+			Expect(mgr.SupportsSync()).To(BeTrue())
 		})
 	})
 	t.Describe("initializeSupportsLogGlobalSizeMax", func() {
@@ -183,23 +185,23 @@ var _ = t.Describe("ConmonManager", func() {
 				runner.EXPECT().CombinedOutput(gomock.Any(), gomock.Any()).Return([]byte{}, errors.New("cmd failed")),
 			)
 			err := mgr.parseConmonVersion("1.1.2")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(false))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeFalse())
 		})
 		It("should be true when major version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("3.1.1")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(true))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeTrue())
 		})
 		It("should be false when minor version less", func() {
 			// Given
@@ -207,23 +209,23 @@ var _ = t.Describe("ConmonManager", func() {
 				runner.EXPECT().CombinedOutput(gomock.Any(), gomock.Any()).Return([]byte{}, errors.New("cmd failed")),
 			)
 			err := mgr.parseConmonVersion("2.0.2")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(false))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeFalse())
 		})
 		It("should be true when minor version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.2.2")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(true))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeTrue())
 		})
 		It("should be false when patch version less", func() {
 			// Given
@@ -231,33 +233,33 @@ var _ = t.Describe("ConmonManager", func() {
 				runner.EXPECT().CombinedOutput(gomock.Any(), gomock.Any()).Return([]byte{}, errors.New("cmd failed")),
 			)
 			err := mgr.parseConmonVersion("2.1.1")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(false))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeFalse())
 		})
 		It("should be true when patch version greater", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.1.3")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(true))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeTrue())
 		})
 		It("should be true when version equal", func() {
 			// Given
 			err := mgr.parseConmonVersion("2.1.2")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(true))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeTrue())
 		})
 		It("should be true if feature backported", func() {
 			// Given
@@ -265,13 +267,13 @@ var _ = t.Describe("ConmonManager", func() {
 				runner.EXPECT().CombinedOutput(gomock.Any(), gomock.Any()).Return([]byte("--log-global-size-max"), nil),
 			)
 			err := mgr.parseConmonVersion("0.0.0")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// When
 			mgr.initializeSupportsLogGlobalSizeMax("")
 
 			// Then
-			Expect(mgr.SupportsLogGlobalSizeMax()).To(Equal(true))
+			Expect(mgr.SupportsLogGlobalSizeMax()).To(BeTrue())
 		})
 	})
 })

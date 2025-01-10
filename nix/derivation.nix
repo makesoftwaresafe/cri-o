@@ -1,8 +1,11 @@
-{ pkgs }:
-with pkgs; buildGo118Module {
+{ stdenv
+, pkgs
+}:
+with pkgs; buildGo123Module /* use go 1.23 */ {
   name = "cri-o";
-  src = ./..;
-  vendorSha256 = null;
+  # Use Pure to avoid exuding the .git directory
+  src = nix-gitignore.gitignoreSourcePure [ ../.gitignore ] ./..;
+  vendorHash = null;
   doCheck = false;
   enableParallelBuilding = true;
   outputs = [ "out" ];
@@ -15,32 +18,31 @@ with pkgs; buildGo118Module {
     pkg-config
     which
   ];
-  buildInputs = [
+  buildInputs = lib.optionals (!stdenv.hostPlatform.isMusl) [
     glibc
     glibc.static
+  ] ++ [
     gpgme
-    libassuan
-    libgpgerror
-    libseccomp
     libapparmor
+    libassuan
+    libgpg-error
+    libseccomp
     libselinux
   ];
   prePatch = ''
     export CFLAGS='-static -pthread'
     export LDFLAGS='-s -w -static-libgcc -static'
     export EXTRA_LDFLAGS='-s -w -linkmode external -extldflags "-static -lm"'
-    export BUILDTAGS='static netgo osusergo exclude_graphdriver_btrfs exclude_graphdriver_devicemapper seccomp apparmor selinux'
+    export BUILDTAGS='static netgo osusergo exclude_graphdriver_btrfs seccomp apparmor selinux'
     export CGO_ENABLED=1
+    export CGO_LDFLAGS='-lgpgme -lassuan -lgpg-error'
+    export SOURCE_DATE_EPOCH=0
   '';
   buildPhase = ''
-    patchShebangs .
-    make bin/crio
-    make bin/crio-status
-    make bin/pinns
+    make binaries
   '';
   installPhase = ''
     install -Dm755 bin/crio $out/bin/crio
-    install -Dm755 bin/crio-status $out/bin/crio-status
     install -Dm755 bin/pinns $out/bin/pinns
   '';
 }

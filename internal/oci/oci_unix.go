@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package oci
 
@@ -13,13 +12,14 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"k8s.io/client-go/tools/remotecommand"
-	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+
+	"github.com/cri-o/cri-o/utils"
 )
 
 func Kill(pid int) error {
 	err := unix.Kill(pid, unix.SIGKILL)
 	if err != nil && err != unix.ESRCH {
-		return fmt.Errorf("failed to kill process: %v", err)
+		return fmt.Errorf("failed to kill process: %w", err)
 	}
 	return nil
 }
@@ -29,17 +29,23 @@ func setSize(fd uintptr, size remotecommand.TerminalSize) error {
 	return unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, winsize)
 }
 
-func ttyCmd(execCmd *exec.Cmd, stdin io.Reader, stdout io.WriteCloser, resize <-chan remotecommand.TerminalSize) error {
+func ttyCmd(execCmd *exec.Cmd, stdin io.Reader, stdout io.WriteCloser, resizeChan <-chan remotecommand.TerminalSize, c *Container) error {
 	p, err := pty.Start(execCmd)
 	if err != nil {
 		return err
 	}
 	defer p.Close()
-
 	// make sure to close the stdout stream
 	defer stdout.Close()
 
-	kubecontainer.HandleResizing(resize, func(size remotecommand.TerminalSize) {
+	pid := execCmd.Process.Pid
+	if err := c.AddExecPID(pid, true); err != nil {
+		return err
+	}
+
+	defer c.DeleteExecPID(pid)
+
+	utils.HandleResizing(resizeChan, func(size remotecommand.TerminalSize) {
 		if err := setSize(p.Fd(), size); err != nil {
 			logrus.Warnf("Unable to set terminal size: %v", err)
 		}

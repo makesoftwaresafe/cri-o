@@ -9,7 +9,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ContainerAttach", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -30,7 +30,7 @@ var _ = t.Describe("ContainerAttach", func() {
 				})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 		})
 
@@ -41,20 +41,20 @@ var _ = t.Describe("ContainerAttach", func() {
 				&types.AttachRequest{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})
 
 	t.Describe("StreamServer: Attach", func() {
-		It("shoud fail if container was not found", func() {
+		It("should fail if container was not found", func() {
 			// Given
 			// When
-			err := testStreamService.Attach(testContainer.ID(),
+			err := testStreamService.Attach(context.Background(), testContainer.ID(),
 				nil, nil, nil, false, make(chan remotecommand.TerminalSize))
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

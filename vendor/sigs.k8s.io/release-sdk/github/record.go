@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/google/go-github/v45/github"
+	"github.com/google/go-github/v60/github"
 	"github.com/sirupsen/logrus"
 )
 
@@ -49,6 +49,9 @@ const (
 	gitHubAPIListReleaseAssets          gitHubAPI = "ListReleaseAssets"
 	gitHubAPICreateComment              gitHubAPI = "CreateComment"
 	gitHubAPIListMilestones             gitHubAPI = "ListMilestones"
+	gitHubAPIListIssues                 gitHubAPI = "ListIssues"
+	gitHubAPIListComments               gitHubAPI = "ListComments"
+	gitHubAPICheckRateLimit             gitHubAPI = "CheckRateLimit"
 )
 
 type apiRecord struct {
@@ -97,7 +100,7 @@ func (c *githubNotesRecordClient) ListCommits(ctx context.Context, owner, repo s
 	return commits, resp, nil
 }
 
-func (c *githubNotesRecordClient) ListPullRequestsWithCommit(ctx context.Context, owner, repo, sha string, opt *github.PullRequestListOptions) ([]*github.PullRequest, *github.Response, error) {
+func (c *githubNotesRecordClient) ListPullRequestsWithCommit(ctx context.Context, owner, repo, sha string, opt *github.ListOptions) ([]*github.PullRequest, *github.Response, error) {
 	prs, resp, err := c.client.ListPullRequestsWithCommit(ctx, owner, repo, sha, opt)
 	if err != nil {
 		return nil, nil, err
@@ -210,13 +213,19 @@ func (c *githubNotesRecordClient) ListTags(
 }
 
 func (c *githubNotesRecordClient) CreatePullRequest(
-	ctx context.Context, owner, repo, baseBranchName, headBranchName, title, body string,
+	_ context.Context, owner, repo, baseBranchName, headBranchName, title, body string, //nolint: revive
+) (*github.PullRequest, error) {
+	return &github.PullRequest{}, nil
+}
+
+func (c *githubNotesRecordClient) RequestPullRequestReview(
+	ctx context.Context, owner, repo string, prNumber int, reviewers, teamReviewers []string, //nolint: revive
 ) (*github.PullRequest, error) {
 	return &github.PullRequest{}, nil
 }
 
 func (c *githubNotesRecordClient) CreateIssue(
-	ctx context.Context, owner, repo string, req *github.IssueRequest,
+	_ context.Context, owner, repo string, req *github.IssueRequest, //nolint: revive
 ) (*github.Issue, error) {
 	return &github.Issue{}, nil
 }
@@ -253,7 +262,7 @@ func (c *githubNotesRecordClient) ListBranches(
 
 // UpdateReleasePage modifies a release, not recorded
 func (c *githubNotesRecordClient) UpdateReleasePage(
-	ctx context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease,
+	_ context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease, //nolint: revive
 ) (*github.RepositoryRelease, error) {
 	return &github.RepositoryRelease{}, nil
 }
@@ -267,7 +276,7 @@ func (c *githubNotesRecordClient) UploadReleaseAsset(
 
 // DeleteReleaseAsset removes an asset from a page, note recorded
 func (c *githubNotesRecordClient) DeleteReleaseAsset(
-	ctx context.Context, owner, repo string, assetID int64,
+	_ context.Context, owner, repo string, assetID int64, //nolint: revive
 ) error {
 	return nil
 }
@@ -309,6 +318,45 @@ func (c *githubNotesRecordClient) CreateComment(ctx context.Context, owner, repo
 		return nil, nil, err
 	}
 	return issueComment, resp, nil
+}
+
+func (c *githubNotesRecordClient) ListIssues(
+	ctx context.Context, owner, repo string, opts *github.IssueListByRepoOptions,
+) ([]*github.Issue, *github.Response, error) {
+	issues, resp, err := c.client.ListIssues(ctx, owner, repo, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.recordAPICall(gitHubAPIListIssues, issues, resp); err != nil {
+		return nil, nil, err
+	}
+	return issues, resp, nil
+}
+
+func (c *githubNotesRecordClient) ListComments(
+	ctx context.Context, owner, repo string, number int, opts *github.IssueListCommentsOptions,
+) ([]*github.IssueComment, *github.Response, error) {
+	comments, resp, err := c.client.ListComments(ctx, owner, repo, number, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.recordAPICall(gitHubAPIListComments, comments, resp); err != nil {
+		return nil, nil, err
+	}
+	return comments, resp, nil
+}
+
+func (c *githubNotesRecordClient) CheckRateLimit(
+	ctx context.Context,
+) (*github.RateLimits, *github.Response, error) {
+	rt, resp, err := c.client.CheckRateLimit(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.recordAPICall(gitHubAPICheckRateLimit, rt, resp); err != nil {
+		return nil, nil, err
+	}
+	return rt, resp, nil
 }
 
 // recordAPICall records a single GitHub API call into a JSON file by ensuring

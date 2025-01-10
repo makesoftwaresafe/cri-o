@@ -2,41 +2,28 @@ package runtimehandlerhooks
 
 import (
 	"context"
-	"strings"
+	"sync"
+
+	"github.com/opencontainers/runtime-tools/generate"
 
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
-	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/internal/oci"
-	crioann "github.com/cri-o/cri-o/pkg/annotations"
-	libconfig "github.com/cri-o/cri-o/pkg/config"
 )
 
+var (
+	cpuLoadBalancingAllowedAnywhereOnce sync.Once
+	cpuLoadBalancingAllowedAnywhere     bool
+)
+
+//nolint:iface // interface duplication is intentional
 type RuntimeHandlerHooks interface {
+	PreCreate(ctx context.Context, specgen *generate.Generator, s *sandbox.Sandbox, c *oci.Container) error
 	PreStart(ctx context.Context, c *oci.Container, s *sandbox.Sandbox) error
 	PreStop(ctx context.Context, c *oci.Container, s *sandbox.Sandbox) error
+	PostStop(ctx context.Context, c *oci.Container, s *sandbox.Sandbox) error
 }
 
-// GetRuntimeHandlerHooks returns RuntimeHandlerHooks implementation by the runtime handler name
-func GetRuntimeHandlerHooks(ctx context.Context, config *libconfig.Config, handler string, annotations map[string]string) (RuntimeHandlerHooks, error) {
-	if strings.Contains(handler, HighPerformance) {
-		log.Warnf(ctx, "The usage of the handler %q without adding high-performance feature annotations under allowed_annotations will be deprecated under 1.21", HighPerformance)
-		return &HighPerformanceHooks{config.IrqBalanceConfigFile}, nil
-	}
-	if highPerformanceAnnotationsSpecified(annotations) {
-		log.Warnf(ctx, "The usage of the handler %q without adding high-performance feature annotations under allowed_annotations will be deprecated under 1.21", HighPerformance)
-		return &HighPerformanceHooks{config.IrqBalanceConfigFile}, nil
-	}
-
-	return nil, nil
-}
-
-func highPerformanceAnnotationsSpecified(annotations map[string]string) bool {
-	for k := range annotations {
-		if strings.HasPrefix(k, crioann.CPULoadBalancingAnnotation) ||
-			strings.HasPrefix(k, crioann.CPUQuotaAnnotation) ||
-			strings.HasPrefix(k, crioann.IRQLoadBalancingAnnotation) {
-			return true
-		}
-	}
-	return false
+//nolint:iface // interface duplication is intentional
+type HighPerformanceHook interface {
+	RuntimeHandlerHooks
 }
