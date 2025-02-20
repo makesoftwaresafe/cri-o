@@ -1,6 +1,7 @@
 package criocli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,7 +33,7 @@ func completion() *cli.Command {
 			case "zsh":
 				return zshCompletion(c)
 			default:
-				return fmt.Errorf("only bash, fish or zsh are supported")
+				return errors.New("only bash, fish or zsh are supported")
 			}
 		},
 	}
@@ -51,10 +52,12 @@ complete -F _cli_bash_autocomplete %s`
 
 func bashCompletion(c *cli.Context) error {
 	subcommands := []string{}
+
 	for _, command := range c.App.Commands {
 		if command.Hidden {
 			continue
 		}
+
 		for j := range command.Names() {
 			subcommands = append(subcommands, command.Names()[j])
 		}
@@ -69,6 +72,7 @@ func bashCompletion(c *cli.Context) error {
 		fmt.Sprintf(bashCompletionTemplate,
 			strings.Join(subcommands, "\n"),
 			c.App.Name))
+
 	return nil
 }
 
@@ -93,10 +97,12 @@ compdef _cli_zsh_autocomplete %s`
 
 func zshCompletion(c *cli.Context) error {
 	subcommands := []string{}
+
 	for _, command := range c.App.Commands {
 		if command.Hidden {
 			continue
 		}
+
 		for _, name := range command.Names() {
 			subcommands = append(subcommands, zshQuoteCmd(name, command.Usage))
 		}
@@ -113,6 +119,7 @@ func zshCompletion(c *cli.Context) error {
 			strings.Join(subcommands, "\n        "),
 			strings.Join(opts, "\n        "),
 			c.App.Name))
+
 	return nil
 }
 
@@ -120,6 +127,7 @@ func zshQuoteCmd(name, usage string) string {
 	if !strings.ContainsRune(usage, '\'') {
 		return "'" + name + ":" + usage + "'"
 	}
+
 	return "\"" + name + ":" + strings.ReplaceAll(usage, "$", "\\$") + "\""
 }
 
@@ -128,6 +136,8 @@ func fishCompletion(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+
 	fmt.Fprintln(c.App.Writer, strings.TrimSpace(completion))
+
 	return nil
 }

@@ -4,24 +4,27 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"time"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
 	cnicurrent "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/cri-o/ocicni/pkg/ocicni"
+	"k8s.io/apimachinery/pkg/api/resource"
+	utilnet "k8s.io/utils/net"
+
 	"github.com/cri-o/cri-o/internal/hostport"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
 	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/server/metrics"
-	"github.com/cri-o/ocicni/pkg/ocicni"
-	"github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
-
-	utilnet "k8s.io/utils/net"
 )
 
 // networkStart sets up the sandbox's network and returns the pod IP on success
-// or an error
+// or an error.
 func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs []string, result cnitypes.Result, retErr error) {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
 	overallStart := time.Now()
 	// Give a network Start call a full 5 minutes, independent of the context of the request.
 	// This is to prevent the CNI plugin from taking an unbounded amount of time,
@@ -33,6 +36,7 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 	if initialDeadline, ok := ctx.Deadline(); ok {
 		startTimeout += time.Until(initialDeadline)
 	}
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), startTimeout)
 	defer startCancel()
 
@@ -40,7 +44,7 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 		return nil, nil, nil
 	}
 
-	podNetwork, err := s.newPodNetwork(sb)
+	podNetwork, err := s.newPodNetwork(ctx, sb)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -58,16 +62,17 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 	}()
 
 	podSetUpStart := time.Now()
+
 	_, err = s.config.CNIPlugin().SetUpPodWithContext(startCtx, podNetwork)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create pod network sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+		return nil, nil, fmt.Errorf("failed to create pod network sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 	}
 	// metric about the CNI network setup operation
 	metrics.Instance().MetricOperationsLatencySet("network_setup_pod", podSetUpStart)
 
 	podNetworkStatus, err := s.config.CNIPlugin().GetPodNetworkStatusWithContext(startCtx, podNetwork)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get network status for pod sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+		return nil, nil, fmt.Errorf("failed to get network status for pod sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 	}
 
 	// only one cnitypes.Result is returned since newPodNetwork sets Networks list empty
@@ -76,7 +81,7 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 
 	network, err := cnicurrent.GetResult(result)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get network JSON for pod sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+		return nil, nil, fmt.Errorf("failed to get network JSON for pod sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 	}
 
 	// only do portmapping to the first IP of each IP family
@@ -97,9 +102,8 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 				Name:         sbName,
 				PortMappings: sbPortMappings,
 				IP:           ip,
-				HostNetwork:  false,
 			}
-			// nolint:gocritic // using a switch statement is not much different
+			//nolint:gocritic // using a switch statement is not much different
 			if utilnet.IsIPv6(ip) {
 				if foundIPv6 {
 					// we have already done the portmap for IPv6
@@ -114,9 +118,10 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 				// found a new IPv4 address, do the portmap
 				foundIPv4 = true
 			}
-			err = s.hostportManager.Add(sbID, mapping, "")
+
+			err = s.hostportManager.Add(sbID, mapping)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to add hostport mapping for sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+				return nil, nil, fmt.Errorf("failed to add hostport mapping for sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 			}
 		}
 	}
@@ -125,27 +130,32 @@ func (s *Server) networkStart(ctx context.Context, sb *sandbox.Sandbox) (podIPs 
 
 	// metric about the whole network setup operation
 	metrics.Instance().MetricOperationsLatencySet("network_setup_overall", overallStart)
+
 	return podIPs, result, err
 }
 
-// getSandboxIP retrieves the IP address for the sandbox
-func (s *Server) getSandboxIPs(sb *sandbox.Sandbox) ([]string, error) {
+// getSandboxIP retrieves the IP address for the sandbox.
+func (s *Server) getSandboxIPs(ctx context.Context, sb *sandbox.Sandbox) ([]string, error) {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
 	if sb.HostNetwork() {
 		return nil, nil
 	}
 
-	podNetwork, err := s.newPodNetwork(sb)
+	podNetwork, err := s.newPodNetwork(ctx, sb)
 	if err != nil {
 		return nil, err
 	}
+
 	podNetworkStatus, err := s.config.CNIPlugin().GetPodNetworkStatus(podNetwork)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get network status for pod sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+		return nil, fmt.Errorf("failed to get network status for pod sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 	}
 
 	res, err := cnicurrent.GetResult(podNetworkStatus[0].Result)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get network JSON for pod sandbox %s(%s): %v", sb.Name(), sb.ID(), err)
+		return nil, fmt.Errorf("failed to get network JSON for pod sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
 	}
 
 	podIPs := make([]string, 0, len(res.IPs))
@@ -157,8 +167,11 @@ func (s *Server) getSandboxIPs(sb *sandbox.Sandbox) ([]string, error) {
 }
 
 // networkStop cleans up and removes a pod's network.  It is best-effort and
-// must call the network plugin even if the network namespace is already gone
+// must call the network plugin even if the network namespace is already gone.
 func (s *Server) networkStop(ctx context.Context, sb *sandbox.Sandbox) error {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
 	if sb.HostNetwork() || sb.NetworkStopped() {
 		return nil
 	}
@@ -169,7 +182,6 @@ func (s *Server) networkStop(ctx context.Context, sb *sandbox.Sandbox) error {
 	mapping := &hostport.PodPortMapping{
 		Name:         sb.Name(),
 		PortMappings: sb.PortMappings(),
-		HostNetwork:  false,
 	}
 	// portMapping removal does not need the IP address
 	if err := s.hostportManager.Remove(sb.ID(), mapping); err != nil {
@@ -177,32 +189,49 @@ func (s *Server) networkStop(ctx context.Context, sb *sandbox.Sandbox) error {
 			sb.Name(), sb.ID(), err)
 	}
 
-	podNetwork, err := s.newPodNetwork(sb)
+	podNetwork, err := s.newPodNetwork(ctx, sb)
 	if err != nil {
 		return err
 	}
+
 	if err := s.config.CNIPlugin().TearDownPodWithContext(stopCtx, podNetwork); err != nil {
-		return errors.Wrapf(err, "failed to destroy network for pod sandbox %s(%s)", sb.Name(), sb.ID())
+		retErr := fmt.Errorf("failed to destroy network for pod sandbox %s(%s): %w", sb.Name(), sb.ID(), err)
+
+		if _, statErr := os.Stat(podNetwork.NetNS); statErr != nil {
+			return fmt.Errorf("%w: stat netns path %q: %w", retErr, podNetwork.NetNS, statErr)
+		}
+
+		// The netns file may still exists, which means that it's likely
+		// corrupted. Remove it to allow cleanup of the network namespace:
+		if rmErr := os.RemoveAll(podNetwork.NetNS); rmErr != nil {
+			return fmt.Errorf("%w: failed to remove netns path: %w", retErr, rmErr)
+		}
+
+		log.Warnf(ctx, "Removed invalid netns path %s from pod sandbox %s(%s)", podNetwork.NetNS, sb.Name(), sb.ID())
 	}
 
-	return sb.SetNetworkStopped(true)
+	return sb.SetNetworkStopped(ctx, true)
 }
 
-func (s *Server) newPodNetwork(sb *sandbox.Sandbox) (ocicni.PodNetwork, error) {
+func (s *Server) newPodNetwork(ctx context.Context, sb *sandbox.Sandbox) (ocicni.PodNetwork, error) {
+	_, span := log.StartSpan(ctx)
+	defer span.End()
+
 	var egress, ingress int64
 
 	if val, ok := sb.Annotations()["kubernetes.io/egress-bandwidth"]; ok {
 		egressQ, err := resource.ParseQuantity(val)
 		if err != nil {
-			return ocicni.PodNetwork{}, fmt.Errorf("failed to parse egress bandwidth: %v", err)
+			return ocicni.PodNetwork{}, fmt.Errorf("failed to parse egress bandwidth: %w", err)
 		} else if iegress, isok := egressQ.AsInt64(); isok {
 			egress = iegress
 		}
 	}
+
 	if val, ok := sb.Annotations()["kubernetes.io/ingress-bandwidth"]; ok {
 		ingressQ, err := resource.ParseQuantity(val)
 		if err != nil {
-			return ocicni.PodNetwork{}, fmt.Errorf("failed to parse ingress bandwidth: %v", err)
+			return ocicni.PodNetwork{}, fmt.Errorf("failed to parse ingress bandwidth: %w", err)
 		} else if iingress, isok := ingressQ.AsInt64(); isok {
 			ingress = iingress
 		}
@@ -216,6 +245,7 @@ func (s *Server) newPodNetwork(sb *sandbox.Sandbox) (ocicni.PodNetwork, error) {
 			bwConfig.IngressRate = uint64(ingress)
 			bwConfig.IngressBurst = math.MaxUint32*8 - 1 // 4GB burst limit
 		}
+
 		if egress > 0 {
 			bwConfig.EgressRate = uint64(egress)
 			bwConfig.EgressBurst = math.MaxUint32*8 - 1 // 4GB burst limit
@@ -223,6 +253,12 @@ func (s *Server) newPodNetwork(sb *sandbox.Sandbox) (ocicni.PodNetwork, error) {
 	}
 
 	network := s.config.CNIPlugin().GetDefaultNetworkName()
+	podAnnotations := sb.Annotations()
+	// To address typecheck linter.
+	if podAnnotations == nil {
+		podAnnotations = make(map[string]string)
+	}
+
 	return ocicni.PodNetwork{
 		Name:      sb.KubeName(),
 		Namespace: sb.Namespace(),
@@ -231,7 +267,50 @@ func (s *Server) newPodNetwork(sb *sandbox.Sandbox) (ocicni.PodNetwork, error) {
 		ID:        sb.ID(),
 		NetNS:     sb.NetNsPath(),
 		RuntimeConfig: map[string]ocicni.RuntimeConfig{
-			network: {Bandwidth: bwConfig},
+			network: {
+				Bandwidth:      bwConfig,
+				CgroupPath:     sb.CgroupParent(),
+				PodAnnotations: &podAnnotations,
+			},
 		},
 	}, nil
+}
+
+// networkGC cleans up any resources concerned with stale pods (pods not
+// included in validPods).
+func (s *Server) networkGC(ctx context.Context, validPods []*sandbox.Sandbox) error {
+	_, span := log.StartSpan(ctx)
+	defer span.End()
+
+	return s.config.CNIPluginGC(ctx, func() ([]*ocicni.PodNetwork, error) {
+		validPodNetworks := make([]*ocicni.PodNetwork, len(validPods))
+
+		for i := range validPods {
+			podNetwork, err := s.newPodNetwork(ctx, validPods[i])
+			if err != nil {
+				return nil, err
+			}
+
+			validPodNetworks[i] = &podNetwork
+		}
+
+		return validPodNetworks, nil
+	})
+}
+
+// WaitForCNIPlugin waits for the CNI plugin to be ready.
+func (s *Server) waitForCNIPlugin(ctx context.Context, sboxName string) error {
+	if err := s.config.CNIPluginReadyOrError(); err != nil {
+		watcher := s.config.CNIPluginAddWatcher()
+
+		log.Infof(ctx, "CNI plugin not ready. Waiting to create %s", sboxName)
+
+		if ready := <-watcher; !ready {
+			return fmt.Errorf("server shutdown before CNI plugin was ready: %w", err)
+		}
+
+		log.Infof(ctx, "CNI plugin is now ready. Continuing to create %s", sboxName)
+	}
+
+	return nil
 }

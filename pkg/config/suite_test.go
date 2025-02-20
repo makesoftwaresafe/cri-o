@@ -1,16 +1,18 @@
 package config_test
 
 import (
+	"errors"
 	"os/exec"
 	"testing"
 
-	"github.com/cri-o/cri-o/pkg/config"
-	. "github.com/cri-o/cri-o/test/framework"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/pkg/config"
+	. "github.com/cri-o/cri-o/test/framework"
 )
 
-// TestLib runs the created specs
+// TestLib runs the created specs.
 func TestLibConfig(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunFrameworkSpecs(t, "LibConfig")
@@ -29,7 +31,12 @@ const (
 
 func validConmonPath() string {
 	conmonPath, err := exec.LookPath("conmon")
-	Expect(err).To(BeNil())
+	if errors.Is(err, exec.ErrNotFound) {
+		Skip("conmon not found in $PATH")
+	}
+
+	Expect(err).ToNot(HaveOccurred())
+
 	return conmonPath
 }
 
@@ -50,7 +57,9 @@ func beforeEach() {
 
 func defaultConfig() *config.Config {
 	c, err := config.DefaultConfig()
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(c).NotTo(BeNil())
+	t.EnsureRuntimeDeps()
+
 	return c
 }

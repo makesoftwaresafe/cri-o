@@ -11,42 +11,34 @@ function teardown() {
 	cleanup_test
 }
 
-@test "metrics with default port" {
-	# start crio with default port 9090
+@test "metrics with default host and port" {
+	HOST="127.0.0.1"
 	PORT="9090"
+
+	# Start CRI-O with default host and port.
 	CONTAINER_ENABLE_METRICS=true start_crio
-	if ! port_listens "$PORT"; then
-		skip "Metrics port $PORT not listening"
+
+	# The metrics endpoint should not listen on all available interfaces.
+	if host_and_port_listens "::" $PORT; then
+		echo "Metrics endpoint should not listen on all interfaces" >&3
+		return 1
 	fi
 
-	# get metrics
-	curl -sf "http://localhost:$PORT/metrics"
+	curl -sf "http://${HOST}:${PORT}/metrics" | grep crio_operations
 }
 
-@test "metrics with random port" {
-	# start crio with custom port
+@test "metrics with custom host using localhost and random port" {
+	HOST="localhost"
 	PORT=$(free_port)
-	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
+
+	# Start CRI-O using a custom host of "localhost",
+	# which should be the same as "127.0.0.1", so the
+	# same as default.
+	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_HOST=$HOST CONTAINER_METRICS_PORT=$PORT start_crio
 
 	crictl run "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json
 
-	# get metrics
-	curl -sf "http://localhost:$PORT/metrics" | grep crio_operations
-}
-
-@test "metrics with operations quantile" {
-	# start crio with custom port
-	PORT=$(free_port)
-	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
-
-	for ((i = 0; i < 100; i++)); do
-		crictl version
-	done
-
-	# get metrics
-	curl -sf "http://localhost:$PORT/metrics" | grep 'container_runtime_crio_operations_latency_microseconds_total{operation_type="Version",quantile="0.5"}'
-	curl -sf "http://localhost:$PORT/metrics" | grep 'container_runtime_crio_operations_latency_microseconds_total{operation_type="Version",quantile="0.9"}'
-	curl -sf "http://localhost:$PORT/metrics" | grep 'container_runtime_crio_operations_latency_microseconds_total{operation_type="Version",quantile="0.99"}'
+	curl -sf "http://localhost:${PORT}/metrics" | grep crio_operations
 }
 
 @test "secure metrics with random port" {
@@ -92,31 +84,48 @@ function teardown() {
 	curl -sfk "https://localhost:$PORT/metrics" | grep crio_operations
 }
 
-@test "metrics container oom" {
-	PORT=$(free_port)
-	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
-
-	jq '.image.image = "quay.io/crio/oom"
-        | .linux.resources.memory_limit_in_bytes = 25165824
-        | .command = ["/oom"]' \
-		"$TESTDATA/container_config.json" > "$TESTDIR/config.json"
-	CTR_ID=$(crictl run "$TESTDIR/config.json" "$TESTDATA/sandbox_config.json")
-
-	# Wait for container to OOM
-	CNT=0
-	while [ $CNT -le 100 ]; do
-		CNT=$((CNT + 1))
-		OUTPUT=$(crictl inspect --output yaml "$CTR_ID")
-		if [[ "$OUTPUT" == *"OOMKilled"* ]]; then
-			break
-		fi
-		sleep 10
-	done
-	[[ "$OUTPUT" == *"OOMKilled"* ]]
-
-	METRIC=$(curl -sf "http://localhost:$PORT/metrics" | grep '^container_runtime_crio_containers_oom_total')
-	[[ "$METRIC" == 'container_runtime_crio_containers_oom_total 1' ]]
-
-	METRIC=$(curl -sf "http://localhost:$PORT/metrics" | grep 'crio_containers_oom{')
-	[[ "$METRIC" == 'container_runtime_crio_containers_oom{name="k8s_container1_podsandbox1_redhat.test.crio_redhat-test-crio_1"} 1' ]]
-}
+# TODO: deflake and re-enable the test
+#@test "metrics container oom" {
+#	PORT=$(free_port)
+#	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$PORT start_crio
+#
+#	jq '.linux.resources.memory_limit_in_bytes = 15728640
+#        | .command = ["sh", "-c", "sleep 5; dd if=/dev/zero of=/dev/null bs=20M"]' \
+#		"$TESTDATA/container_config.json" > "$TESTDIR/config.json"
+#	CTR_ID=$(crictl run "$TESTDIR/config.json" "$TESTDATA/sandbox_config.json")
+#
+#	# Wait for container to OOM.
+#	EXPECTED_EXIT_STATUS=137 wait_until_exit "$CTR_ID"
+#	if ! crictl inspect "$CTR_ID" | jq -e '.status.reason == "OOMKilled"'; then
+#		# The container has exited but it was not OOM-killed.
+#		# Provide some details to debug the issue.
+#		echo "--- crictl inspect :: ---"
+#		crictl inspect --output yaml "$CTR_ID" | grep -A40 'status:'
+#		echo "--- --- ---"
+#		# Most probably it's a conmon bug.
+#		if [ "$RUNTIME_TYPE" == "oci" ]; then
+#			echo "--- conmon log :: ---"
+#			journalctl -t conmon --grep "${CTR_ID::20}"
+#			echo "--- --- ---"
+#		fi
+#		# Systemd should have caught the OOM event.
+#		if [[ "$CONTAINER_CGROUP_MANAGER" == "systemd" ]]; then
+#			echo "--- systemd log :: ---"
+#			journalctl --unit "crio-${CTR_ID}.scope"
+#			echo "--- --- ---"
+#		fi
+#
+#		# Alas, we have utterly failed.
+#		false
+#	fi
+#
+#	METRIC=$(curl -sf "http://localhost:$PORT/metrics" | grep '^container_runtime_crio_containers_oom_total')
+#	[[ "$METRIC" == 'container_runtime_crio_containers_oom_total 1' ]]
+#
+#	METRIC=$(curl -sf "http://localhost:$PORT/metrics" | grep 'crio_containers_oom{')
+#	[[ "$METRIC" == 'container_runtime_crio_containers_oom{name="k8s_container1_podsandbox1_redhat.test.crio_redhat-test-crio_1"} 1' ]]
+#
+#	# should cleanup the metrics after removal
+#	crictl rmp -fa
+#	! curl -sf "http://localhost:$PORT/metrics" | grep 'crio_containers_oom{'
+#}

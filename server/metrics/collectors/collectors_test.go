@@ -3,19 +3,20 @@ package collectors_test
 import (
 	"testing"
 
-	"github.com/cri-o/cri-o/server/metrics/collectors"
-	. "github.com/cri-o/cri-o/test/framework"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/server/metrics/collectors"
+	. "github.com/cri-o/cri-o/test/framework"
 )
 
-// TestCollectors runs the created specs
+// TestCollectors runs the created specs.
 func TestCollectors(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Collectors")
 }
 
-// nolint: gochecknoglobals
+//nolint:gochecknoglobals
 var t *TestFramework
 
 var _ = BeforeSuite(func() {
@@ -27,7 +28,7 @@ var _ = AfterSuite(func() {
 	t.Teardown()
 })
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Collectors", func() {
 	t.Describe("All", func() {
 		It("should contain all available metrics", func() {
@@ -36,19 +37,9 @@ var _ = t.Describe("Collectors", func() {
 
 			// When / Then
 			for _, collector := range []collectors.Collector{
-				collectors.Operations,              // Deprecated: in favour of OperationsTotal
-				collectors.OperationsLatencyTotal,  // Deprecated: in favour of OperationsLatencySecondsTotal
-				collectors.OperationsLatency,       // Deprecated: in favour of OperationsLatencySeconds
-				collectors.OperationsErrors,        // Deprecated: in favour of OperationsErrorsTotal
-				collectors.ImagePullsByDigest,      // Deprecated: in favour of ImagePullsBytesTotal
-				collectors.ImagePullsByName,        // Deprecated: in favour of ImagePullsBytesTotal
-				collectors.ImagePullsByNameSkipped, // Deprecated: in favour of ImagePullsSkippedBytesTotal
-				collectors.ImagePullsFailures,      // Deprecated:  in favour of ImagePullsFailureTotal
-				collectors.ImagePullsSuccesses,     // Deprecated:  in favour of ImagePullsSuccessTotal
 				collectors.ImagePullsLayerSize,
-				collectors.ImageLayerReuse, // Deprecated: in favour of ImageLayerReuseTotal
+				collectors.ContainersEventsDropped,
 				collectors.ContainersOOMTotal,
-				collectors.ContainersOOM, // Deprecated: in favour of ContainersOOMCountTotal
 				collectors.ProcessesDefunct,
 				collectors.OperationsTotal,
 				collectors.OperationsLatencySeconds,
@@ -60,11 +51,13 @@ var _ = t.Describe("Collectors", func() {
 				collectors.ImagePullsSuccessTotal,
 				collectors.ImageLayerReuseTotal,
 				collectors.ContainersOOMCountTotal,
+				collectors.ContainersSeccompNotifierCountTotal,
+				collectors.ResourcesStalledAtStage,
 			} {
 				Expect(all.Contains(collector)).To(BeTrue())
 			}
 
-			Expect(all).To(HaveLen(24))
+			Expect(all).To(HaveLen(16))
 		})
 	})
 

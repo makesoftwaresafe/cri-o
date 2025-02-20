@@ -4,15 +4,15 @@ import (
 	"context"
 	"os"
 
-	"github.com/cri-o/cri-o/internal/config/seccomp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/opencontainers/runtime-tools/generate"
-	k8sV1 "k8s.io/api/core/v1"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/config/seccomp"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Config", func() {
 	var sut *seccomp.Config
 
@@ -41,7 +41,8 @@ var _ = t.Describe("Config", func() {
 				"excludes": {
 					"caps": ["CAP_SYS_ADMIN"]
 				}
-			}`), 0o644)).To(BeNil())
+			}`), 0o644)).To(Succeed())
+
 		return file
 	}
 
@@ -64,7 +65,7 @@ var _ = t.Describe("Config", func() {
 			err := sut.LoadProfile("")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should succeed with profile", func() {
@@ -75,98 +76,58 @@ var _ = t.Describe("Config", func() {
 			err := sut.LoadProfile(file)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		if sut != nil && !sut.IsDisabled() {
-			It("should fail with non-existing profile", func() {
+			It("should not fail with non-existing profile", func() {
 				// Given
 				// When
 				err := sut.LoadProfile("/proc/not/existing/file")
 
 				// Then
-				Expect(err).NotTo(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			})
 		}
 	})
 
 	t.Describe("Setup", func() {
-		It("should succeed with profile from file", func() {
-			// Given
-			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
-			file := writeProfileFile()
-
-			// When
-			err = sut.Setup(
-				context.Background(),
-				&generator,
-				nil,
-				k8sV1.SeccompLocalhostProfileNamePrefix+file,
-			)
-
-			// Then
-			Expect(err).To(BeNil())
-		})
-
-		It("should succeed with profile from file and runtime default", func() {
-			// Given
-			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
-
-			// When
-			err = sut.Setup(
-				context.Background(),
-				&generator,
-				nil,
-				k8sV1.SeccompProfileRuntimeDefault,
-			)
-
-			// Then
-			Expect(err).To(BeNil())
-		})
-
-		It("should fail with profile from file if wrong filename", func() {
-			// Given
-			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
-
-			// When
-			err = sut.Setup(
-				context.Background(),
-				&generator,
-				nil,
-				"not-existing",
-			)
-
-			// Then
-			Expect(err).NotTo(BeNil())
+		BeforeEach(func() {
+			if sut.IsDisabled() {
+				Skip("tests need to run as root and enabled seccomp")
+			}
 		})
 
 		It("should succeed with custom profile from field", func() {
 			// Given
 			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			field := &types.SecurityProfile{
 				ProfileType: types.SecurityProfile_RuntimeDefault,
 			}
 
 			// When
-			err = sut.Setup(
+			_, ref, err := sut.Setup(
 				context.Background(),
+				nil,
+				nil,
+				"",
+				"",
+				nil,
+				nil,
 				&generator,
 				field,
-				"",
 			)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ref).To(Equal(types.SecurityProfile_RuntimeDefault.String()))
 		})
 
 		It("should succeed with custom profile from field", func() {
 			// Given
 			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			file := writeProfileFile()
 			field := &types.SecurityProfile{
 				ProfileType:  types.SecurityProfile_Localhost,
@@ -174,36 +135,47 @@ var _ = t.Describe("Config", func() {
 			}
 
 			// When
-			err = sut.Setup(
+			_, ref, err := sut.Setup(
 				context.Background(),
+				nil,
+				nil,
+				"",
+				"",
+				nil,
+				nil,
 				&generator,
 				field,
-				"",
 			)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ref).To(Equal(file))
 		})
 
 		It("should fail with custom profile from field if not existing", func() {
 			// Given
 			generator, err := generate.New("linux")
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			field := &types.SecurityProfile{
 				ProfileType:  types.SecurityProfile_Localhost,
 				LocalhostRef: "not-existing",
 			}
 
 			// When
-			err = sut.Setup(
+			_, _, err = sut.Setup(
 				context.Background(),
+				nil,
+				nil,
+				"",
+				"",
+				nil,
+				nil,
 				&generator,
 				field,
-				"",
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

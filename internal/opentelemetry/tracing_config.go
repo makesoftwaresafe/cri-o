@@ -2,6 +2,7 @@ package opentelemetry
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -10,23 +11,34 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const tracingServiceName = "crio"
 
-// InitTracing configures opentelemetry exporter and tracer provider
+var tracer = otel.Tracer(tracingServiceName)
+
+func Tracer() trace.Tracer {
+	return tracer
+}
+
+// InitTracing configures opentelemetry exporter and tracer provider.
 func InitTracing(ctx context.Context, collectorAddress string, samplingRate int) (*sdktrace.TracerProvider, []otelgrpc.Option, error) {
 	var tp *sdktrace.TracerProvider
-	tracingServiceIDKey, err := os.Hostname()
+
+	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("get hostname: %w", err)
 	}
+
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceNameKey.String(tracingServiceName),
-		semconv.ServiceInstanceIDKey.String(tracingServiceIDKey),
+		semconv.HostNameKey.String(hostname),
+		semconv.ProcessPIDKey.Int64(int64(os.Getpid())),
 	)
+
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(collectorAddress),
 		otlptracegrpc.WithInsecure(),
@@ -49,8 +61,10 @@ func InitTracing(ctx context.Context, collectorAddress string, samplingRate int)
 		sdktrace.WithResource(res),
 	)
 	tmp := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(tmp)
 	opts := []otelgrpc.Option{otelgrpc.WithPropagators(tmp), otelgrpc.WithTracerProvider(tp)}
+
 	return tp, opts, nil
 }

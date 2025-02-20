@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/google/go-github/v45/github"
+	"github.com/google/go-github/v60/github"
 	"github.com/sirupsen/logrus"
 )
 
@@ -49,6 +49,9 @@ const (
 	gitHubAPIListReleaseAssets          gitHubAPI = "ListReleaseAssets"
 	gitHubAPICreateComment              gitHubAPI = "CreateComment"
 	gitHubAPIListMilestones             gitHubAPI = "ListMilestones"
+	gitHubAPIListIssues                 gitHubAPI = "ListIssues"
+	gitHubAPIListComments               gitHubAPI = "ListComments"
+	gitHubAPICheckRateLimit             gitHubAPI = "CheckRateLimit"
 )
 
 type apiRecord struct {
@@ -80,9 +83,11 @@ func (c *githubNotesRecordClient) GetCommit(ctx context.Context, owner, repo, sh
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetCommit, commit, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return commit, resp, nil
 }
 
@@ -91,20 +96,24 @@ func (c *githubNotesRecordClient) ListCommits(ctx context.Context, owner, repo s
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIListCommits, commits, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return commits, resp, nil
 }
 
-func (c *githubNotesRecordClient) ListPullRequestsWithCommit(ctx context.Context, owner, repo, sha string, opt *github.PullRequestListOptions) ([]*github.PullRequest, *github.Response, error) {
+func (c *githubNotesRecordClient) ListPullRequestsWithCommit(ctx context.Context, owner, repo, sha string, opt *github.ListOptions) ([]*github.PullRequest, *github.Response, error) {
 	prs, resp, err := c.client.ListPullRequestsWithCommit(ctx, owner, repo, sha, opt)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIListPullRequestsWithCommit, prs, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return prs, resp, nil
 }
 
@@ -113,9 +122,11 @@ func (c *githubNotesRecordClient) GetPullRequest(ctx context.Context, owner, rep
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetPullRequest, pr, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return pr, resp, nil
 }
 
@@ -124,9 +135,11 @@ func (c *githubNotesRecordClient) GetIssue(ctx context.Context, owner, repo stri
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetIssue, issue, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return issue, resp, nil
 }
 
@@ -135,9 +148,11 @@ func (c *githubNotesRecordClient) UpdateIssue(ctx context.Context, owner, repo s
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIUpdateIssue, issue, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return issue, resp, nil
 }
 
@@ -146,9 +161,11 @@ func (c *githubNotesRecordClient) AddLabels(ctx context.Context, owner, repo str
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIAddLabels, labels, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return appliedLabels, resp, nil
 }
 
@@ -157,9 +174,11 @@ func (c *githubNotesRecordClient) GetRepoCommit(ctx context.Context, owner, repo
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetRepoCommit, commit, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return commit, resp, nil
 }
 
@@ -170,9 +189,11 @@ func (c *githubNotesRecordClient) ListReleases(
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIListReleases, releases, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return releases, resp, nil
 }
 
@@ -183,13 +204,15 @@ func (c *githubNotesRecordClient) GetReleaseByTag(
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetReleaseByTag, release, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return release, resp, nil
 }
 
-// TODO: Complete logic
+// TODO: Complete logic.
 func (c *githubNotesRecordClient) DownloadReleaseAsset(
 	context.Context, string, string, int64,
 ) (io.ReadCloser, string, error) {
@@ -203,20 +226,28 @@ func (c *githubNotesRecordClient) ListTags(
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIListTags, tags, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return tags, resp, nil
 }
 
 func (c *githubNotesRecordClient) CreatePullRequest(
-	ctx context.Context, owner, repo, baseBranchName, headBranchName, title, body string,
+	_ context.Context, owner, repo, baseBranchName, headBranchName, title, body string, draft bool, //nolint: revive
+) (*github.PullRequest, error) {
+	return &github.PullRequest{}, nil
+}
+
+func (c *githubNotesRecordClient) RequestPullRequestReview(
+	ctx context.Context, owner, repo string, prNumber int, reviewers, teamReviewers []string, //nolint: revive
 ) (*github.PullRequest, error) {
 	return &github.PullRequest{}, nil
 }
 
 func (c *githubNotesRecordClient) CreateIssue(
-	ctx context.Context, owner, repo string, req *github.IssueRequest,
+	_ context.Context, owner, repo string, req *github.IssueRequest, //nolint: revive
 ) (*github.Issue, error) {
 	return &github.Issue{}, nil
 }
@@ -251,23 +282,23 @@ func (c *githubNotesRecordClient) ListBranches(
 	return branches, resp, nil
 }
 
-// UpdateReleasePage modifies a release, not recorded
+// UpdateReleasePage modifies a release, not recorded.
 func (c *githubNotesRecordClient) UpdateReleasePage(
-	ctx context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease,
+	_ context.Context, owner, repo string, releaseID int64, releaseData *github.RepositoryRelease, //nolint: revive
 ) (*github.RepositoryRelease, error) {
 	return &github.RepositoryRelease{}, nil
 }
 
-// UploadReleaseAsset uploads files, not recorded
+// UploadReleaseAsset uploads files, not recorded.
 func (c *githubNotesRecordClient) UploadReleaseAsset(
 	context.Context, string, string, int64, *github.UploadOptions, *os.File,
 ) (*github.ReleaseAsset, error) {
 	return &github.ReleaseAsset{}, nil
 }
 
-// DeleteReleaseAsset removes an asset from a page, note recorded
+// DeleteReleaseAsset removes an asset from a page, note recorded.
 func (c *githubNotesRecordClient) DeleteReleaseAsset(
-	ctx context.Context, owner, repo string, assetID int64,
+	_ context.Context, owner, repo string, assetID int64, //nolint: revive
 ) error {
 	return nil
 }
@@ -294,9 +325,11 @@ func (c *githubNotesRecordClient) ListMilestones(
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIListMilestones, mstones, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return mstones, resp, nil
 }
 
@@ -305,20 +338,68 @@ func (c *githubNotesRecordClient) CreateComment(ctx context.Context, owner, repo
 	if err != nil {
 		return nil, nil, err
 	}
+
 	if err := c.recordAPICall(gitHubAPIGetIssue, issueComment, resp); err != nil {
 		return nil, nil, err
 	}
+
 	return issueComment, resp, nil
 }
 
+func (c *githubNotesRecordClient) ListIssues(
+	ctx context.Context, owner, repo string, opts *github.IssueListByRepoOptions,
+) ([]*github.Issue, *github.Response, error) {
+	issues, resp, err := c.client.ListIssues(ctx, owner, repo, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := c.recordAPICall(gitHubAPIListIssues, issues, resp); err != nil {
+		return nil, nil, err
+	}
+
+	return issues, resp, nil
+}
+
+func (c *githubNotesRecordClient) ListComments(
+	ctx context.Context, owner, repo string, number int, opts *github.IssueListCommentsOptions,
+) ([]*github.IssueComment, *github.Response, error) {
+	comments, resp, err := c.client.ListComments(ctx, owner, repo, number, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := c.recordAPICall(gitHubAPIListComments, comments, resp); err != nil {
+		return nil, nil, err
+	}
+
+	return comments, resp, nil
+}
+
+func (c *githubNotesRecordClient) CheckRateLimit(
+	ctx context.Context,
+) (*github.RateLimits, *github.Response, error) {
+	rt, resp, err := c.client.CheckRateLimit(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := c.recordAPICall(gitHubAPICheckRateLimit, rt, resp); err != nil {
+		return nil, nil, err
+	}
+
+	return rt, resp, nil
+}
+
 // recordAPICall records a single GitHub API call into a JSON file by ensuring
-// naming conventions
+// naming conventions.
 func (c *githubNotesRecordClient) recordAPICall(
 	api gitHubAPI, result interface{}, response *github.Response,
 ) error {
 	if result == nil {
 		return errors.New("no result to record")
 	}
+
 	logrus.Debugf("Recording API call %s to %s", api, c.recordDir)
 
 	c.recordMutex.Lock()
@@ -328,6 +409,7 @@ func (c *githubNotesRecordClient) recordAPICall(
 	if j, ok := c.recordState[api]; ok {
 		i = j + 1
 	}
+
 	c.recordState[api] = i
 
 	fileName := fmt.Sprintf("%s-%d.json", api, i)

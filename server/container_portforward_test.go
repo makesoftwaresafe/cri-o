@@ -8,7 +8,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ContainerPortforward", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -29,7 +29,7 @@ var _ = t.Describe("ContainerPortforward", func() {
 				})
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(response).NotTo(BeNil())
 		})
 
@@ -40,19 +40,19 @@ var _ = t.Describe("ContainerPortforward", func() {
 				&types.PortForwardRequest{})
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(response).To(BeNil())
 		})
 	})
 
 	t.Describe("StreamServer: PortForward", func() {
-		It("shoud fail when sandbox not found", func() {
+		It("should fail when sandbox not found", func() {
 			// Given
 			// When
-			err := testStreamService.PortForward(testSandbox.ID(), 0, nil)
+			err := testStreamService.PortForward(context.Background(), testSandbox.ID(), 0, nil)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

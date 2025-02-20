@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"os"
 
-	"github.com/cri-o/cri-o/internal/hostport"
-	"golang.org/x/net/context"
 	v1 "k8s.io/api/core/v1"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/hostport"
+	"github.com/cri-o/cri-o/internal/log"
 )
 
 const (
@@ -55,7 +57,7 @@ func (s *Server) runtimeHandler(req *types.RunPodSandboxRequest) (string, error)
 		return handler, nil
 	}
 
-	if _, err := s.Runtime().ValidateRuntimeHandler(handler); err != nil {
+	if _, err := s.ContainerServer.Runtime().ValidateRuntimeHandler(handler); err != nil {
 		return "", err
 	}
 
@@ -70,10 +72,12 @@ func (s *Server) RunPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 
 func convertPortMappings(in []*types.PortMapping) []*hostport.PortMapping {
 	out := make([]*hostport.PortMapping, 0, len(in))
+
 	for _, v := range in {
 		if v.HostPort <= 0 {
 			continue
 		}
+
 		out = append(out, &hostport.PortMapping{
 			HostPort:      v.HostPort,
 			ContainerPort: v.ContainerPort,
@@ -81,6 +85,7 @@ func convertPortMappings(in []*types.PortMapping) []*hostport.PortMapping {
 			HostIP:        v.HostIp,
 		})
 	}
+
 	return out
 }
 
@@ -91,6 +96,7 @@ func getHostname(id, hostname string, hostNetwork bool) (string, error) {
 			if err != nil {
 				return "", err
 			}
+
 			hostname = h
 		}
 	} else {
@@ -98,14 +104,20 @@ func getHostname(id, hostname string, hostNetwork bool) (string, error) {
 			hostname = id[:12]
 		}
 	}
+
 	return hostname, nil
 }
 
-func (s *Server) setPodSandboxMountLabel(id, mountLabel string) error {
-	storageMetadata, err := s.StorageRuntimeServer().GetContainerMetadata(id)
+func (s *Server) setPodSandboxMountLabel(ctx context.Context, id, mountLabel string) error {
+	_, span := log.StartSpan(ctx)
+	defer span.End()
+
+	storageMetadata, err := s.ContainerServer.StorageRuntimeServer().GetContainerMetadata(id)
 	if err != nil {
 		return err
 	}
+
 	storageMetadata.SetMountLabel(mountLabel)
-	return s.StorageRuntimeServer().SetContainerMetadata(id, &storageMetadata)
+
+	return s.ContainerServer.StorageRuntimeServer().SetContainerMetadata(id, &storageMetadata)
 }

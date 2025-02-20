@@ -2,22 +2,32 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
-	conmonconfig "github.com/containers/conmon/runner/config"
+	"github.com/containers/common/pkg/hooks"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/hooks"
-	"github.com/containers/podman/v4/pkg/rootless"
 	"github.com/containers/storage"
+	"github.com/cri-o/ocicni/pkg/ocicni"
+	"github.com/docker/go-units"
+	"github.com/opencontainers/runtime-spec/specs-go/features"
+	selinux "github.com/opencontainers/selinux/go-selinux"
+	"github.com/sirupsen/logrus"
+	"k8s.io/utils/cpuset"
+	"tags.cncf.io/container-device-interface/pkg/cdi"
+
 	"github.com/cri-o/cri-o/internal/config/apparmor"
 	"github.com/cri-o/cri-o/internal/config/blockio"
 	"github.com/cri-o/cri-o/internal/config/capabilities"
@@ -26,39 +36,36 @@ import (
 	"github.com/cri-o/cri-o/internal/config/conmonmgr"
 	"github.com/cri-o/cri-o/internal/config/device"
 	"github.com/cri-o/cri-o/internal/config/node"
+	"github.com/cri-o/cri-o/internal/config/nri"
 	"github.com/cri-o/cri-o/internal/config/nsmgr"
 	"github.com/cri-o/cri-o/internal/config/rdt"
 	"github.com/cri-o/cri-o/internal/config/seccomp"
 	"github.com/cri-o/cri-o/internal/config/ulimits"
+	"github.com/cri-o/cri-o/internal/log"
+	"github.com/cri-o/cri-o/internal/storage/references"
 	"github.com/cri-o/cri-o/pkg/annotations"
 	"github.com/cri-o/cri-o/server/metrics/collectors"
 	"github.com/cri-o/cri-o/server/useragent"
 	"github.com/cri-o/cri-o/utils"
 	"github.com/cri-o/cri-o/utils/cmdrunner"
-	"github.com/cri-o/ocicni/pkg/ocicni"
-	selinux "github.com/opencontainers/selinux/go-selinux"
-	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
-
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
-// Defaults if none are specified
+// Defaults if none are specified.
 const (
-	defaultRuntime             = "runc"
-	DefaultRuntimeType         = "oci"
-	DefaultRuntimeRoot         = "/run/runc"
-	defaultGRPCMaxMsgSize      = 80 * 1024 * 1024
-	OCIBufSize                 = 8192
-	RuntimeTypeVM              = "vm"
-	RuntimeTypePod             = "pod"
-	defaultCtrStopTimeout      = 30 // seconds
-	defaultNamespacesDir       = "/var/run"
-	RuntimeTypeVMBinaryPattern = "containerd-shim-([a-zA-Z0-9\\-\\+])+-v2"
-	tasksetBinary              = "taskset"
-	defaultMonitorCgroup       = "system.slice"
-	MonitorExecCgroupDefault   = ""
-	MonitorExecCgroupContainer = "container"
+	defaultGRPCMaxMsgSize = 80 * 1024 * 1024
+	// default minimum memory for all other runtimes.
+	defaultContainerMinMemory = 12 * 1024 * 1024 // 12 MiB
+	// minimum memory for crun, the default runtime.
+	defaultContainerMinMemoryCrun = 500 * 1024 // 500 KiB
+	OCIBufSize                    = 8192
+	RuntimeTypeVM                 = "vm"
+	RuntimeTypePod                = "pod"
+	defaultCtrStopTimeout         = 30 // seconds
+	defaultNamespacesDir          = "/var/run"
+	RuntimeTypeVMBinaryPattern    = "containerd-shim-([a-zA-Z0-9\\-\\+])+-v2"
+	tasksetBinary                 = "taskset"
+	MonitorExecCgroupDefault      = ""
+	MonitorExecCgroupContainer    = "container"
 )
 
 // Config represents the entire set of configuration values that can be set for
@@ -76,38 +83,36 @@ type Config struct {
 	MetricsConfig
 	TracingConfig
 	StatsConfig
+	NRI           *nri.Config
 	SystemContext *types.SystemContext
 }
 
-// Iface provides a config interface for data encapsulation
+// Iface provides a config interface for data encapsulation.
 type Iface interface {
 	GetStore() (storage.Store, error)
 	GetData() *Config
 }
 
-// GetData returns the Config of a Iface
+// GetData returns the Config of a Iface.
 func (c *Config) GetData() *Config {
 	return c
 }
 
-// ImageVolumesType describes image volume handling strategies
+// ImageVolumesType describes image volume handling strategies.
 type ImageVolumesType string
 
 const (
-	// ImageVolumesMkdir option is for using mkdir to handle image volumes
+	// ImageVolumesMkdir option is for using mkdir to handle image volumes.
 	ImageVolumesMkdir ImageVolumesType = "mkdir"
-	// ImageVolumesIgnore option is for ignoring image volumes altogether
+	// ImageVolumesIgnore option is for ignoring image volumes altogether.
 	ImageVolumesIgnore ImageVolumesType = "ignore"
-	// ImageVolumesBind option is for using bind mounted volumes
-	ImageVolumesBind ImageVolumesType = "bind"
-	// DefaultPauseImage is default pause image
-	DefaultPauseImage string = "registry.k8s.io/pause:3.6"
+	// ImageVolumesBind option is for using bind mounted volumes.
 )
 
 const (
 	// DefaultPidsLimit is the default value for maximum number of processes
-	// allowed inside a container
-	DefaultPidsLimit = 0
+	// allowed inside a container.
+	DefaultPidsLimit = -1
 
 	// DefaultLogSizeMax is the default value for the maximum log size
 	// allowed for a container. Negative values mean that no limit is imposed.
@@ -115,13 +120,17 @@ const (
 )
 
 const (
-	// DefaultBlockIOConfigFile is the default value for blockio controller configuration file
+	// DefaultBlockIOConfigFile is the default value for blockio controller configuration file.
 	DefaultBlockIOConfigFile = ""
+	// DefaultBlockIOReload is the default value for reloading blockio with changed config file and block devices.
+	DefaultBlockIOReload = false
 )
 
 const (
-	// DefaultIrqBalanceConfigFile default irqbalance service configuration file path
+	// DefaultIrqBalanceConfigFile default irqbalance service configuration file path.
 	DefaultIrqBalanceConfigFile = "/etc/sysconfig/irqbalance"
+	// DefaultIrqBalanceConfigRestoreFile contains the banned cpu mask configuration to restore. Name due to backward compatibility.
+	DefaultIrqBalanceConfigRestoreFile = "/etc/sysconfig/orig_irq_banned_cpus"
 )
 
 // This structure is necessary to fake the TOML tables when parsing,
@@ -138,12 +147,19 @@ type RootConfig struct {
 	// explicitly handled by other options will be stored.
 	RunRoot string `toml:"runroot"`
 
+	// ImageStore if set it will allow end-users to store newly pulled image
+	// in path provided by `ImageStore` instead of path provided in `Root`.
+	ImageStore string `toml:"imagestore"`
+
 	// Storage is the name of the storage driver which handles actually
 	// storing the contents of containers.
 	Storage string `toml:"storage_driver"`
 
 	// StorageOption is a list of storage driver specific options.
 	StorageOptions []string `toml:"storage_option"`
+
+	// PullOptions is a map of pull options that are passed to the storage driver.
+	pullOptions map[string]string
 
 	// LogDir is the default log directory where all logs will go unless kubelet
 	// tells us to put them somewhere else.
@@ -165,16 +181,27 @@ type RootConfig struct {
 	// If set to false, one must use the external command `crio wipe` to wipe the containers and images in these situations.
 	// The option InternalWipe is deprecated, and will be removed in a future release.
 	InternalWipe bool `toml:"internal_wipe"`
+
+	// InternalRepair is used to repair the affected images.
+	InternalRepair bool `toml:"internal_repair"`
 }
 
-// GetStore returns the container storage for a given configuration
+// GetStore returns the container storage for a given configuration.
 func (c *RootConfig) GetStore() (storage.Store, error) {
 	return storage.GetStore(storage.StoreOptions{
 		RunRoot:            c.RunRoot,
 		GraphRoot:          c.Root,
+		ImageStore:         c.ImageStore,
 		GraphDriverName:    c.Storage,
 		GraphDriverOptions: c.StorageOptions,
+		PullOptions:        c.pullOptions,
 	})
+}
+
+// runtimeHandlerFeatures represents the supported features of the runtime.
+type runtimeHandlerFeatures struct {
+	RecursiveReadOnlyMounts bool `json:"-"` // Internal use only.
+	features.Features
 }
 
 // RuntimeHandler represents each item of the "crio.runtime.runtimes" TOML
@@ -195,10 +222,18 @@ type RuntimeHandler struct {
 	// "io.kubernetes.cri-o.ShmSize" for configuring the size of /dev/shm.
 	// "io.kubernetes.cri-o.UnifiedCgroup.$CTR_NAME" for configuring the cgroup v2 unified block for a container.
 	// "io.containers.trace-syscall" for tracing syscalls via the OCI seccomp BPF hook.
+	// "io.kubernetes.cri-o.LinkLogs" for linking logs into the pod.
+	// "seccomp-profile.kubernetes.cri-o.io" for setting the seccomp profile for:
+	//   - a specific container by using: `seccomp-profile.kubernetes.cri-o.io/<CONTAINER_NAME>`
+	//   - a whole pod by using: `seccomp-profile.kubernetes.cri-o.io/POD`
+	//   Note that the annotation works on containers as well as on images.
+	//   For images, the plain annotation `seccomp-profile.kubernetes.cri-o.io`
+	//   can be used without the required `/POD` suffix or a container name.
+	// "io.kubernetes.cri-o.DisableFIPS" for disabling FIPS mode for a pod within a FIPS-enabled Kubernetes cluster.
 	AllowedAnnotations []string `toml:"allowed_annotations,omitempty"`
 
 	// DisallowedAnnotations is the slice of experimental annotations that are not allowed for this handler.
-	DisallowedAnnotations []string
+	DisallowedAnnotations []string `toml:"-"`
 
 	// Fields prefixed by Monitor hold the configuration for the monitor for this runtime. At present, the following monitors are supported:
 	// oci supports conmon
@@ -209,17 +244,40 @@ type RuntimeHandler struct {
 
 	// MonitorExecCgroup indicates whether to move exec probes to the container's cgroup.
 	MonitorExecCgroup string `toml:"monitor_exec_cgroup,omitempty"`
+
+	// PlatformRuntimePaths defines a configuration option that specifies
+	// the runtime paths for different platforms.
+	PlatformRuntimePaths map[string]string `toml:"platform_runtime_paths,omitempty"`
+
+	// Marks the runtime as performing image pulling on its own, and doesn't
+	// require crio to do it.
+	RuntimePullImage bool `toml:"runtime_pull_image,omitempty"`
+
+	// ContainerMinMemory is the minimum memory that must be set for a container.
+	ContainerMinMemory string `toml:"container_min_memory,omitempty"`
+
+	// NoSyncLog if enabled will disable fsync on log rotation and container exit.
+	// This can improve performance but may result in data loss on hard system crashes.
+	NoSyncLog bool `toml:"no_sync_log"`
+
+	// Output of the "features" subcommand.
+	// This is populated dynamically and not read from config.
+	features runtimeHandlerFeatures
+
+	// Inheritance request
+	// Fill in the Runtime information (paths and type) from the default runtime
+	InheritDefaultRuntime bool `toml:"inherit_default_runtime,omitempty"`
+
+	// Default annotations specified for runtime handler if they're not overridden by
+	// the pod spec.
+	DefaultAnnotations map[string]string `toml:"default_annotations,omitempty"`
 }
 
-// Multiple runtime Handlers in a map
+// Multiple runtime Handlers in a map.
 type Runtimes map[string]*RuntimeHandler
 
 // RuntimeConfig represents the "crio.runtime" TOML config table.
 type RuntimeConfig struct {
-	// SeccompUseDefaultWhenEmpty specifies whether the default profile
-	// should be used when an empty one is specified.
-	SeccompUseDefaultWhenEmpty bool `toml:"seccomp_use_default_when_empty"`
-
 	// NoPivot instructs the runtime to not use `pivot_root`, but instead use `MS_MOVE`
 	NoPivot bool `toml:"no_pivot"`
 
@@ -244,13 +302,17 @@ type RuntimeConfig struct {
 	ConmonEnv []string `toml:"conmon_env"`
 
 	// HooksDir holds paths to the directories containing hooks
-	// configuration files.  When the same filename is present in in
+	// configuration files.  When the same filename is present in
 	// multiple directories, the file in the directory listed last in
 	// this slice takes precedence.
 	HooksDir []string `toml:"hooks_dir"`
 
 	// Capabilities to add to all containers.
 	DefaultCapabilities capabilities.Capabilities `toml:"default_capabilities"`
+
+	// AddInheritableCapabilities can be set to add inheritable capabilities. They were pre-1.23 by default, and were dropped in 1.24.
+	// This can cause a regression with non-root users not getting capabilities as they previously did.
+	AddInheritableCapabilities bool `toml:"add_inheritable_capabilities"`
 
 	// Additional environment variables to set for all the
 	// containers. These are overridden if set in the
@@ -302,6 +364,10 @@ type RuntimeConfig struct {
 	// BlockIOConfigFile is the path to the blockio class configuration
 	// file for configuring the cgroup blockio controller.
 	BlockIOConfigFile string `toml:"blockio_config_file"`
+
+	// BlockIOReload instructs the runtime to reload blockio configuration
+	// rescan block devices in the system before assigning blockio parameters.
+	BlockIOReload bool `toml:"blockio_reload"`
 
 	// IrqBalanceConfigFile is the irqbalance service config file which is used
 	// for configuring irqbalance daemon.
@@ -363,6 +429,10 @@ type RuntimeConfig struct {
 	// to manage namespace lifecycle
 	PinnsPath string `toml:"pinns_path"`
 
+	// CriuPath is the path to find the criu binary, which is needed
+	// to checkpoint and restore containers
+	EnableCriuSupport bool `toml:"enable_criu_support"`
+
 	// Runtimes defines a list of OCI compatible runtimes. The runtime to
 	// use is picked based on the runtime_handler provided by the CRI. If
 	// no runtime_handler is provided, the runtime will be picked based on
@@ -393,9 +463,20 @@ type RuntimeConfig struct {
 	// InfraCtrCPUSet is the CPUs set that will be used to run infra containers
 	InfraCtrCPUSet string `toml:"infra_ctr_cpuset"`
 
+	// SharedCPUSet is the CPUs set that will be used for guaranteed containers that
+	// want access to shared cpus.
+	SharedCPUSet string `toml:"shared_cpuset"`
+
 	// AbsentMountSourcesToReject is a list of paths that, when absent from the host,
 	// will cause a container creation to fail (as opposed to the current behavior of creating a directory).
 	AbsentMountSourcesToReject []string `toml:"absent_mount_sources_to_reject"`
+
+	// EnablePodEvents specifies if the container pod-level events should be generated to optimize the PLEG at Kubelet.
+	EnablePodEvents bool `toml:"enable_pod_events"`
+
+	// IrqBalanceConfigRestoreFile is the irqbalance service banned CPU list to restore.
+	// If empty, no restoration attempt will be done.
+	IrqBalanceConfigRestoreFile string `toml:"irqbalance_config_restore_file"`
 
 	// seccompConfig is the internal seccomp configuration
 	seccompConfig *seccomp.Config
@@ -423,6 +504,19 @@ type RuntimeConfig struct {
 
 	// namespaceManager is the internal NamespaceManager configuration
 	namespaceManager *nsmgr.NamespaceManager
+
+	// Whether SELinux should be disabled within a pod,
+	// when it is running in the host network namespace
+	// https://github.com/cri-o/cri-o/issues/5501
+	HostNetworkDisableSELinux bool `toml:"hostnetwork_disable_selinux"`
+
+	// Option to disable hostport mapping in CRI-O
+	// Default value is 'false'
+	DisableHostPortMapping bool `toml:"disable_hostport_mapping"`
+
+	// Option to set the timezone inside the container.
+	// Use 'Local' to match the timezone of the host machine.
+	Timezone string `toml:"timezone"`
 }
 
 // ImageConfig represents the "crio.image" TOML config table.
@@ -434,8 +528,9 @@ type ImageConfig struct {
 	// containing credentials necessary for pulling images from secure
 	// registries.
 	GlobalAuthFile string `toml:"global_auth_file"`
-	// PauseImage is the name of an image which we use to instantiate infra
-	// containers.
+	// PauseImage is the name of an image on a registry which we use to instantiate infra
+	// containers. It should start with a registry host name.
+	// Format is enforced by validation.
 	PauseImage string `toml:"pause_image"`
 	// PauseImageAuthFile, if not empty, is a path to a file like
 	// /var/lib/kubelet/config.json containing credentials necessary
@@ -444,24 +539,44 @@ type ImageConfig struct {
 	// PauseCommand is the path of the binary we run in an infra
 	// container that's been instantiated using PauseImage.
 	PauseCommand string `toml:"pause_command"`
+	// PinnedImages is a list of container images that should be pinned
+	// and not subject to garbage collection by kubelet.
+	// Pinned images will remain in the container runtime's storage until
+	// they are manually removed. Default value: empty list (no images pinned)
+	PinnedImages []string `toml:"pinned_images"`
 	// SignaturePolicyPath is the name of the file which decides what sort
 	// of policy we use when deciding whether or not to trust an image that
 	// we've pulled.  Outside of testing situations, it is strongly advised
 	// that this be left unspecified so that the default system-wide policy
 	// will be used.
 	SignaturePolicyPath string `toml:"signature_policy"`
+	// SignaturePolicyDir is the root path for pod namespace-separated
+	// signature policies. The final policy to be used on image pull will be
+	// <SIGNATURE_POLICY_DIR>/<NAMESPACE>.json.
+	// If no pod namespace is being provided on image pull (via the sandbox
+	// config), or the concatenated path is non existent, then the
+	// SignaturePolicyPath or system wide policy will be used as fallback.
+	// Must be an absolute path.
+	SignaturePolicyDir string `toml:"signature_policy_dir"`
 	// InsecureRegistries is a list of registries that must be contacted w/o
 	// TLS verification.
 	InsecureRegistries []string `toml:"insecure_registries"`
 	// ImageVolumes controls how volumes specified in image config are handled
 	ImageVolumes ImageVolumesType `toml:"image_volumes"`
-	// Registries holds a list of registries used to pull unqualified images
-	Registries []string `toml:"registries"`
 	// Temporary directory for big files
 	BigFilesTemporaryDir string `toml:"big_files_temporary_dir"`
+	// AutoReloadRegistries if set to true, will automatically
+	// reload the mirror registry when there is an update to the
+	// 'registries.conf.d' directory.
+	AutoReloadRegistries bool `toml:"auto_reload_registries"`
+	// PullProgressTimeout is the timeout for an image pull to make progress
+	// until the pull operation gets canceled. This value will be also used for
+	// calculating the pull progress interval to pullProgressTimeout / 10.
+	// Can be set to 0 to disable the timeout as well as the progress output.
+	PullProgressTimeout time.Duration `toml:"pull_progress_timeout"`
 }
 
-// NetworkConfig represents the "crio.network" TOML config table
+// NetworkConfig represents the "crio.network" TOML config table.
 type NetworkConfig struct {
 	// CNIDefaultNetwork is the default CNI network name to be selected
 	CNIDefaultNetwork string `toml:"cni_default_network"`
@@ -516,13 +631,16 @@ type APIConfig struct {
 }
 
 // MetricsConfig specifies all necessary configuration for Prometheus based
-// metrics retrieval
+// metrics retrieval.
 type MetricsConfig struct {
 	// EnableMetrics can be used to globally enable or disable metrics support
 	EnableMetrics bool `toml:"enable_metrics"`
 
 	// MetricsCollectors specifies enabled metrics collectors.
 	MetricsCollectors collectors.Collectors `toml:"metrics_collectors"`
+
+	// MetricsHost is the IP address or hostname on which the metrics server will listen.
+	MetricsHost string `toml:"metrics_host"`
 
 	// MetricsPort is the port on which the metrics server will listen.
 	MetricsPort int `toml:"metrics_port"`
@@ -537,7 +655,7 @@ type MetricsConfig struct {
 	MetricsKey string `toml:"metrics_key"`
 }
 
-// TracingConfig specifies all necessary configuration for opentelemetry trace exports
+// TracingConfig specifies all necessary configuration for opentelemetry trace exports.
 type TracingConfig struct {
 	// EnableTracing can be used to globally enable or disable tracing support
 	EnableTracing bool `toml:"enable_tracing"`
@@ -545,16 +663,25 @@ type TracingConfig struct {
 	// TracingEndpoint is the address on which the grpc tracing collector server will listen.
 	TracingEndpoint string `toml:"tracing_endpoint"`
 
-	// TracingSamplingRatePerMillion is the number of samples to collect per million spans.
+	// TracingSamplingRatePerMillion is the number of samples to collect per million spans. Set to 1000000 to always sample.
 	// Defaults to 0.
 	TracingSamplingRatePerMillion int `toml:"tracing_sampling_rate_per_million"`
 }
 
-// StatsConfig specifies all necessary configuration for reporting container and pod stats
+// StatsConfig specifies all necessary configuration for reporting container/pod stats
+// and pod sandbox metrics.
 type StatsConfig struct {
 	// StatsCollectionPeriod is the number of seconds between collecting pod and container stats.
 	// If set to 0, the stats are collected on-demand instead.
 	StatsCollectionPeriod int `toml:"stats_collection_period"`
+
+	// CollectionPeriod is the number of seconds between collecting pod/container stats
+	// and pod sandbox metrics. If set to 0, the metrics/stats are collected on-demand instead.
+	CollectionPeriod int `toml:"collection_period"`
+
+	// IncludedPodMetrics specifies the list of metrics to include when collecting pod metrics.
+	// If empty, all available metrics will be collected.
+	IncludedPodMetrics []string `toml:"included_pod_metrics"`
 }
 
 // tomlConfig is another way of looking at a Config, which is
@@ -570,10 +697,11 @@ type tomlConfig struct {
 		Metrics struct{ MetricsConfig } `toml:"metrics"`
 		Tracing struct{ TracingConfig } `toml:"tracing"`
 		Stats   struct{ StatsConfig }   `toml:"stats"`
+		NRI     struct{ *nri.Config }   `toml:"nri"`
 	} `toml:"crio"`
 }
 
-// SetSystemContext configures the SystemContext used by containers/image library
+// SetSystemContext configures the SystemContext used by containers/image library.
 func (t *tomlConfig) SetSystemContext(c *Config) {
 	c.SystemContext.BigFilesTemporaryDir = c.ImageConfig.BigFilesTemporaryDir
 }
@@ -588,6 +716,7 @@ func (t *tomlConfig) toConfig(c *Config) {
 	c.MetricsConfig = t.Crio.Metrics.MetricsConfig
 	c.TracingConfig = t.Crio.Tracing.TracingConfig
 	c.StatsConfig = t.Crio.Stats.StatsConfig
+	c.NRI = t.Crio.NRI.Config
 	t.SetSystemContext(c)
 }
 
@@ -600,18 +729,25 @@ func (t *tomlConfig) fromConfig(c *Config) {
 	t.Crio.Metrics.MetricsConfig = c.MetricsConfig
 	t.Crio.Tracing.TracingConfig = c.TracingConfig
 	t.Crio.Stats.StatsConfig = c.StatsConfig
+	t.Crio.NRI.Config = c.NRI
 }
+
+const configLogPrefix = "Updating config from "
 
 // UpdateFromFile populates the Config from the TOML-encoded file at the given
 // path and "remembers" that we should reload this file's contents when we
 // receive a SIGHUP.
 // Returns errors encountered when reading or parsing the files, or nil
 // otherwise.
-func (c *Config) UpdateFromFile(path string) error {
-	if err := c.UpdateFromDropInFile(path); err != nil {
-		return err
+func (c *Config) UpdateFromFile(ctx context.Context, path string) error {
+	log.Infof(ctx, configLogPrefix+"single file: %s", path)
+
+	if err := c.UpdateFromDropInFile(ctx, path); err != nil {
+		return fmt.Errorf("update config from drop-in file: %w", err)
 	}
+
 	c.singleConfigPath = path
+
 	return nil
 }
 
@@ -620,7 +756,8 @@ func (c *Config) UpdateFromFile(path string) error {
 // of the drop-in files which are used to supplement it.
 // Returns errors encountered when reading or parsing the files, or nil
 // otherwise.
-func (c *Config) UpdateFromDropInFile(path string) error {
+func (c *Config) UpdateFromDropInFile(ctx context.Context, path string) error {
+	log.Infof(ctx, configLogPrefix+"drop-in file: %s", path)
 	// keeps the storage options from storage.conf and merge it to crio config
 	var storageOpts []string
 	storageOpts = append(storageOpts, c.StorageOptions...)
@@ -637,15 +774,9 @@ func (c *Config) UpdateFromDropInFile(path string) error {
 	t := new(tomlConfig)
 	t.fromConfig(c)
 
-	metadata, err := toml.Decode(string(data), t)
+	_, err = toml.Decode(string(data), t)
 	if err != nil {
-		return fmt.Errorf("unable to decode configuration %v: %v", path, err)
-	}
-
-	runtimesKey := []string{"crio", "runtime", "default_runtime"}
-	if metadata.IsDefined(runtimesKey...) &&
-		t.Crio.Runtime.RuntimeConfig.DefaultRuntime != defaultRuntime {
-		delete(c.Runtimes, defaultRuntime)
+		return fmt.Errorf("unable to decode configuration %v: %w", path, err)
 	}
 
 	storageOpts = append(storageOpts, t.Crio.RootConfig.StorageOptions...)
@@ -655,48 +786,52 @@ func (c *Config) UpdateFromDropInFile(path string) error {
 	if t.Crio.Root == "" {
 		t.Crio.Root = graphRoot
 	}
+
 	if t.Crio.RunRoot == "" {
 		t.Crio.RunRoot = runRoot
 	}
+
 	if t.Crio.Storage == "" {
 		t.Crio.Storage = storageDriver
 	}
 
-	// Registries are deprecated in cri-o.conf and turned into a NOP.
-	// Users should use registries.conf instead, so let's log it.
-	if len(t.Crio.Image.Registries) > 0 {
-		t.Crio.Image.Registries = nil
-		logrus.Warnf("Support for the 'registries' option has been dropped but it is referenced in %q.  Please use containers-registries.conf(5) for configuring unqualified-search registries instead.", path)
-	}
-
 	t.toConfig(c)
+
 	return nil
 }
 
 // removeDupStorageOpts removes duplicated storage option from the list
-// keeps the last appearance
+// keeps the last appearance.
 func removeDupStorageOpts(storageOpts []string) []string {
 	var resOpts []string
+
 	opts := make(map[string]bool)
 	for i := len(storageOpts) - 1; i >= 0; i-- {
 		if ok := opts[storageOpts[i]]; ok {
 			continue
 		}
+
 		opts[storageOpts[i]] = true
+
 		resOpts = append(resOpts, storageOpts[i])
 	}
+
 	for i, j := 0, len(resOpts)-1; i < j; i, j = i+1, j-1 {
 		resOpts[i], resOpts[j] = resOpts[j], resOpts[i]
 	}
+
 	return resOpts
 }
 
 // UpdateFromPath recursively iterates the provided path and updates the
-// configuration for it
-func (c *Config) UpdateFromPath(path string) error {
+// configuration for it.
+func (c *Config) UpdateFromPath(ctx context.Context, path string) error {
+	log.Infof(ctx, configLogPrefix+"path: %s", path)
+
 	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
 		return nil
 	}
+
 	if err := filepath.Walk(path,
 		func(p string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -705,11 +840,14 @@ func (c *Config) UpdateFromPath(path string) error {
 			if info.IsDir() {
 				return nil
 			}
-			return c.UpdateFromDropInFile(p)
+
+			return c.UpdateFromDropInFile(ctx, p)
 		}); err != nil {
-		return err
+		return fmt.Errorf("walk path: %w", err)
 	}
+
 	c.dropInConfigDir = path
+
 	return nil
 }
 
@@ -723,6 +861,16 @@ func (c *Config) ToFile(path string) error {
 	}
 
 	return os.WriteFile(path, b, 0o644)
+}
+
+// ToString encodes the config into a string value.
+func (c *Config) ToString() (string, error) {
+	configBytes, err := c.ToBytes()
+	if err != nil {
+		return "", err
+	}
+
+	return string(configBytes), nil
 }
 
 // ToBytes encodes the config into a byte slice. It errors if the encoding
@@ -743,31 +891,35 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 // DefaultConfig returns the default configuration for crio.
 func DefaultConfig() (*Config, error) {
-	storeOpts, err := storage.DefaultStoreOptions(rootless.IsRootless(), rootless.GetRootlessUID())
+	storeOpts, err := storage.DefaultStoreOptions()
 	if err != nil {
 		return nil, err
 	}
+
 	cgroupManager := cgmgr.New()
-	seccompConfig := seccomp.New()
+
 	ua, err := useragent.Get()
 	if err != nil {
-		return nil, errors.Wrap(err, "get user agent")
+		return nil, fmt.Errorf("get user agent: %w", err)
 	}
+
 	return &Config{
 		Comment: "# ",
 		SystemContext: &types.SystemContext{
 			DockerRegistryUserAgent: ua,
 		},
 		RootConfig: RootConfig{
-			Root:               storeOpts.GraphRoot,
-			RunRoot:            storeOpts.RunRoot,
-			Storage:            storeOpts.GraphDriverName,
-			StorageOptions:     storeOpts.GraphDriverOptions,
-			LogDir:             "/var/log/crio/pods",
-			VersionFile:        CrioVersionPathTmp,
-			VersionFilePersist: CrioVersionPathPersist,
-			CleanShutdownFile:  CrioCleanShutdownFile,
-			InternalWipe:       true,
+			Root:              storeOpts.GraphRoot,
+			RunRoot:           storeOpts.RunRoot,
+			ImageStore:        storeOpts.ImageStore,
+			Storage:           storeOpts.GraphDriverName,
+			StorageOptions:    storeOpts.GraphDriverOptions,
+			pullOptions:       storeOpts.PullOptions,
+			LogDir:            "/var/log/crio/pods",
+			VersionFile:       CrioVersionPathTmp,
+			CleanShutdownFile: CrioCleanShutdownFile,
+			InternalWipe:      true,
+			InternalRepair:    true,
 		},
 		APIConfig: APIConfig{
 			Listen:             CrioSocketPath,
@@ -776,62 +928,75 @@ func DefaultConfig() (*Config, error) {
 			GRPCMaxSendMsgSize: defaultGRPCMaxMsgSize,
 			GRPCMaxRecvMsgSize: defaultGRPCMaxMsgSize,
 		},
-		RuntimeConfig: RuntimeConfig{
-			AllowedDevices:     []string{"/dev/fuse"},
-			DecryptionKeysPath: "/etc/crio/keys/",
-			DefaultRuntime:     defaultRuntime,
-			Runtimes: Runtimes{
-				defaultRuntime: defaultRuntimeHandler(),
-			},
-			SELinux:                    selinuxEnabled(),
-			ApparmorProfile:            apparmor.DefaultProfile,
-			BlockIOConfigFile:          DefaultBlockIOConfigFile,
-			IrqBalanceConfigFile:       DefaultIrqBalanceConfigFile,
-			RdtConfigFile:              rdt.DefaultRdtConfigFile,
-			CgroupManagerName:          cgroupManager.Name(),
-			PidsLimit:                  DefaultPidsLimit,
-			ContainerExitsDir:          containerExitsDir,
-			ContainerAttachSocketDir:   conmonconfig.ContainerAttachSocketDir,
-			MinimumMappableUID:         -1,
-			MinimumMappableGID:         -1,
-			LogSizeMax:                 DefaultLogSizeMax,
-			CtrStopTimeout:             defaultCtrStopTimeout,
-			DefaultCapabilities:        capabilities.Default(),
-			LogLevel:                   "info",
-			HooksDir:                   []string{hooks.DefaultDir},
-			CDISpecDirs:                cdi.DefaultSpecDirs,
-			NamespacesDir:              defaultNamespacesDir,
-			DropInfraCtr:               true,
-			SeccompUseDefaultWhenEmpty: seccompConfig.UseDefaultWhenEmpty(),
-			seccompConfig:              seccomp.New(),
-			apparmorConfig:             apparmor.New(),
-			blockioConfig:              blockio.New(),
-			cgroupManager:              cgroupManager,
-			deviceConfig:               device.New(),
-			namespaceManager:           nsmgr.New(defaultNamespacesDir, ""),
-			rdtConfig:                  rdt.New(),
-			ulimitsConfig:              ulimits.New(),
-		},
+		RuntimeConfig: *DefaultRuntimeConfig(cgroupManager),
 		ImageConfig: ImageConfig{
-			DefaultTransport: "docker://",
-			PauseImage:       DefaultPauseImage,
-			PauseCommand:     "/pause",
-			ImageVolumes:     ImageVolumesMkdir,
+			DefaultTransport:    "docker://",
+			PauseImage:          DefaultPauseImage,
+			PauseCommand:        "/pause",
+			ImageVolumes:        ImageVolumesMkdir,
+			SignaturePolicyDir:  "/etc/crio/policies",
+			PullProgressTimeout: 10 * time.Second,
 		},
 		NetworkConfig: NetworkConfig{
 			NetworkDir: cniConfigDir,
 			PluginDirs: []string{cniBinDir},
 		},
 		MetricsConfig: MetricsConfig{
+			MetricsHost:       "127.0.0.1",
 			MetricsPort:       9090,
 			MetricsCollectors: collectors.All(),
 		},
 		TracingConfig: TracingConfig{
-			TracingEndpoint:               "0.0.0.0:4317",
+			TracingEndpoint:               "127.0.0.1:4317",
 			TracingSamplingRatePerMillion: 0,
 			EnableTracing:                 false,
 		},
+		NRI: nri.New(),
 	}, nil
+}
+
+// DefaultRuntimeConfig returns the default Runtime configs.
+func DefaultRuntimeConfig(cgroupManager cgmgr.CgroupManager) *RuntimeConfig {
+	return &RuntimeConfig{
+		AllowedDevices:     []string{"/dev/fuse", "/dev/net/tun"},
+		DecryptionKeysPath: "/etc/crio/keys/",
+		DefaultRuntime:     DefaultRuntime,
+		Runtimes: Runtimes{
+			DefaultRuntime: defaultRuntimeHandler(cgroupManager.IsSystemd()),
+		},
+		SELinux:                     selinuxEnabled(),
+		ApparmorProfile:             apparmor.DefaultProfile,
+		BlockIOConfigFile:           DefaultBlockIOConfigFile,
+		BlockIOReload:               DefaultBlockIOReload,
+		IrqBalanceConfigFile:        DefaultIrqBalanceConfigFile,
+		RdtConfigFile:               rdt.DefaultRdtConfigFile,
+		CgroupManagerName:           cgroupManager.Name(),
+		PidsLimit:                   DefaultPidsLimit,
+		ContainerExitsDir:           containerExitsDir,
+		ContainerAttachSocketDir:    ContainerAttachSocketDir,
+		MinimumMappableUID:          -1,
+		MinimumMappableGID:          -1,
+		LogSizeMax:                  DefaultLogSizeMax,
+		CtrStopTimeout:              defaultCtrStopTimeout,
+		DefaultCapabilities:         capabilities.Default(),
+		LogLevel:                    "info",
+		HooksDir:                    []string{hooks.DefaultDir},
+		CDISpecDirs:                 cdi.DefaultSpecDirs,
+		NamespacesDir:               defaultNamespacesDir,
+		DropInfraCtr:                true,
+		IrqBalanceConfigRestoreFile: DefaultIrqBalanceConfigRestoreFile,
+		seccompConfig:               seccomp.New(),
+		apparmorConfig:              apparmor.New(),
+		blockioConfig:               blockio.New(),
+		cgroupManager:               cgroupManager,
+		deviceConfig:                device.New(),
+		namespaceManager:            nsmgr.New(defaultNamespacesDir, ""),
+		rdtConfig:                   rdt.New(),
+		ulimitsConfig:               ulimits.New(),
+		HostNetworkDisableSELinux:   true,
+		DisableHostPortMapping:      false,
+		EnableCriuSupport:           true,
+	}
 }
 
 // Validate is the main entry point for library configuration validation.
@@ -844,7 +1009,7 @@ func (c *Config) Validate(onExecution bool) error {
 	case ImageVolumesIgnore:
 	case ImageVolumesBind:
 	default:
-		return fmt.Errorf("unrecognized image volume type specified")
+		return errors.New("unrecognized image volume type specified")
 	}
 
 	if onExecution {
@@ -854,23 +1019,35 @@ func (c *Config) Validate(onExecution bool) error {
 	}
 
 	if err := c.RootConfig.Validate(onExecution); err != nil {
-		return errors.Wrap(err, "validating root config")
+		return fmt.Errorf("validating root config: %w", err)
 	}
 
 	if err := c.RuntimeConfig.Validate(c.SystemContext, onExecution); err != nil {
-		return errors.Wrap(err, "validating runtime config")
+		return fmt.Errorf("validating runtime config: %w", err)
+	}
+
+	c.RuntimeConfig.seccompConfig.SetNotifierPath(
+		filepath.Join(filepath.Dir(c.Listen), "seccomp"),
+	)
+
+	if err := c.ImageConfig.Validate(onExecution); err != nil {
+		return fmt.Errorf("validating image config: %w", err)
 	}
 
 	if err := c.NetworkConfig.Validate(onExecution); err != nil {
-		return errors.Wrap(err, "validating network config")
+		return fmt.Errorf("validating network config: %w", err)
 	}
 
 	if err := c.APIConfig.Validate(onExecution); err != nil {
-		return errors.Wrap(err, "validating api config")
+		return fmt.Errorf("validating api config: %w", err)
 	}
 
 	if !c.SELinux {
 		selinux.SetDisabled()
+	}
+
+	if err := c.NRI.Validate(onExecution); err != nil {
+		return fmt.Errorf("validating NRI config: %w", err)
 	}
 
 	return nil
@@ -884,8 +1061,19 @@ func (c *APIConfig) Validate(onExecution bool) error {
 	if c.GRPCMaxSendMsgSize <= 0 {
 		c.GRPCMaxSendMsgSize = defaultGRPCMaxMsgSize
 	}
+
 	if c.GRPCMaxRecvMsgSize <= 0 {
 		c.GRPCMaxRecvMsgSize = defaultGRPCMaxMsgSize
+	}
+
+	if c.StreamEnableTLS {
+		if c.StreamTLSCert == "" {
+			return errors.New("stream TLS cert path is empty")
+		}
+
+		if c.StreamTLSKey == "" {
+			return errors.New("stream TLS key path is empty")
+		}
 	}
 
 	if onExecution {
@@ -899,17 +1087,17 @@ func (c *APIConfig) Validate(onExecution bool) error {
 // removes unused socket connections if available.
 func RemoveUnusedSocket(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return errors.Wrap(err, "creating socket directories")
+		return fmt.Errorf("creating socket directories: %w", err)
 	}
 
 	// Remove the socket if it already exists
 	if _, err := os.Stat(path); err == nil {
 		if _, err := net.DialTimeout("unix", path, 0); err == nil {
-			return errors.Errorf("already existing connection on %s", path)
+			return fmt.Errorf("already existing connection on %s", path)
 		}
 
 		if err := os.Remove(path); err != nil {
-			return errors.Wrapf(err, "removing %s", path)
+			return fmt.Errorf("removing %s: %w", path, err)
 		}
 	}
 
@@ -925,12 +1113,14 @@ func (c *RootConfig) Validate(onExecution bool) error {
 		if !filepath.IsAbs(c.LogDir) {
 			return errors.New("log_dir is not an absolute path")
 		}
+
 		if err := os.MkdirAll(c.LogDir, 0o700); err != nil {
-			return errors.Wrap(err, "invalid log_dir")
+			return fmt.Errorf("invalid log_dir: %w", err)
 		}
+
 		store, err := c.GetStore()
 		if err != nil {
-			return errors.Wrapf(err, "failed to get store to set defaults")
+			return fmt.Errorf("failed to get store to set defaults: %w", err)
 		}
 		// This step merges the /etc/container/storage.conf with the
 		// storage configuration in crio.conf
@@ -940,6 +1130,7 @@ func (c *RootConfig) Validate(onExecution bool) error {
 		c.Root = store.GraphRoot()
 		c.Storage = store.GraphDriverName()
 		c.StorageOptions = store.GraphOptions()
+		c.pullOptions = store.PullOptions()
 	}
 
 	return nil
@@ -962,20 +1153,14 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 		return err
 	}
 
-	// check we do have at least a runtime
-	if _, ok := c.Runtimes[c.DefaultRuntime]; !ok {
-		// Set the default runtime to "runc" if default_runtime is not set
-		if c.DefaultRuntime == "" {
-			logrus.Debugf("Defaulting to %q as the runtime since default_runtime is not set", defaultRuntime)
-			// The default config sets runc and its path in the runtimes map, so check for that
-			// first. If it does not exist then we add runc + its path to the runtimes map.
-			if _, ok := c.Runtimes[defaultRuntime]; !ok {
-				c.Runtimes[defaultRuntime] = defaultRuntimeHandler()
-			}
-			// Set the DefaultRuntime to runc so we don't fail further along in the code
-			c.DefaultRuntime = defaultRuntime
-		} else {
-			return fmt.Errorf("default_runtime set to %q, but no runtime entry table [crio.runtime.runtimes.%s] was found", c.DefaultRuntime, c.DefaultRuntime)
+	if err := c.ValidateDefaultRuntime(); err != nil {
+		return err
+	}
+
+	if c.Timezone != "" && !strings.EqualFold(c.Timezone, "local") {
+		_, err := time.LoadLocation(c.Timezone)
+		if err != nil {
+			return fmt.Errorf("invalid timezone: %s", c.Timezone)
 		}
 	}
 
@@ -992,28 +1177,29 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 	}
 
 	if _, err := c.Sysctls(); err != nil {
-		return errors.Wrap(err, "invalid default_sysctls")
+		return fmt.Errorf("invalid default_sysctls: %w", err)
 	}
 
 	if err := c.DefaultCapabilities.Validate(); err != nil {
-		return errors.Wrapf(err, "invalid capabilities")
+		return fmt.Errorf("invalid capabilities: %w", err)
 	}
 
 	if c.InfraCtrCPUSet != "" {
 		set, err := cpuset.Parse(c.InfraCtrCPUSet)
 		if err != nil {
-			return errors.Wrap(err, "invalid infra_ctr_cpuset")
+			return fmt.Errorf("invalid infra_ctr_cpuset: %w", err)
 		}
 
 		executable, err := exec.LookPath(tasksetBinary)
 		if err != nil {
-			return errors.Wrapf(err, "%q not found in $PATH", tasksetBinary)
+			return fmt.Errorf("%q not found in $PATH: %w", tasksetBinary, err)
 		}
+
 		cmdrunner.PrependCommandsWith(executable, "--cpu-list", set.String())
 	}
 
 	if err := c.Workloads.Validate(); err != nil {
-		return errors.Wrap(err, "workloads validation")
+		return fmt.Errorf("workloads validation: %w", err)
 	}
 
 	// check for validation on execution
@@ -1021,17 +1207,18 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 		// First, configure cgroup manager so the values of the Runtime.MonitorCgroup can be validated
 		cgroupManager, err := cgmgr.SetCgroupManager(c.CgroupManagerName)
 		if err != nil {
-			return errors.Wrap(err, "unable to update cgroup manager")
+			return fmt.Errorf("unable to update cgroup manager: %w", err)
 		}
+
 		c.cgroupManager = cgroupManager
 
 		if err := c.ValidateRuntimes(); err != nil {
-			return errors.Wrap(err, "runtime validation")
+			return fmt.Errorf("runtime validation: %w", err)
 		}
 
 		// Validate the system registries configuration
 		if _, err := sysregistriesv2.GetRegistries(systemContext); err != nil {
-			return errors.Wrap(err, "invalid registries")
+			return fmt.Errorf("invalid registries: %w", err)
 		}
 
 		// we should use a hooks directory if
@@ -1039,74 +1226,169 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 		// it does not exist but can be created
 		// otherwise, we skip
 		hooksDirs := []string{}
+
 		for _, hooksDir := range c.HooksDir {
 			if err := utils.IsDirectory(hooksDir); err != nil {
 				if !os.IsNotExist(err) {
 					logrus.Warnf("Skipping invalid hooks directory: %s exists but is not a directory", hooksDir)
+
 					continue
 				}
+
 				if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 					logrus.Debugf("Failed to create requested hooks dir: %v", err)
+
 					continue
 				}
 			}
+
 			logrus.Debugf("Using hooks directory: %s", hooksDir)
 			hooksDirs = append(hooksDirs, hooksDir)
+
 			continue
 		}
+
 		c.HooksDir = hooksDirs
 
-		cdi.GetRegistry(cdi.WithSpecDirs(c.CDISpecDirs...))
+		if err := cdi.Configure(cdi.WithSpecDirs(c.CDISpecDirs...)); err != nil {
+			return err
+		}
 
 		// Validate the pinns path
 		if err := c.ValidatePinnsPath("pinns"); err != nil {
-			return errors.Wrap(err, "pinns validation")
+			return fmt.Errorf("pinns validation: %w", err)
 		}
 
 		c.namespaceManager = nsmgr.New(c.NamespacesDir, c.PinnsPath)
 		if err := c.namespaceManager.Initialize(); err != nil {
-			return errors.Wrapf(err, "initialize nsmgr")
+			return fmt.Errorf("initialize nsmgr: %w", err)
 		}
 
-		c.seccompConfig.SetUseDefaultWhenEmpty(c.SeccompUseDefaultWhenEmpty)
+		if c.EnableCriuSupport {
+			if err := validateCriuInPath(); err != nil {
+				c.EnableCriuSupport = false
+
+				logrus.Infof("Checkpoint/restore support disabled: CRIU binary not found int $PATH")
+			} else {
+				logrus.Infof("Checkpoint/restore support enabled")
+			}
+		} else {
+			logrus.Infof("Checkpoint/restore support disabled via configuration")
+		}
 
 		if err := c.seccompConfig.LoadProfile(c.SeccompProfile); err != nil {
-			return errors.Wrap(err, "unable to load seccomp profile")
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unable to load seccomp profile: %w", err)
+			}
+
+			logrus.Info("Specified profile does not exist on disk")
+
+			if err := c.seccompConfig.LoadDefaultProfile(); err != nil {
+				return fmt.Errorf("load default seccomp profile: %w", err)
+			}
 		}
 
 		if err := c.apparmorConfig.LoadProfile(c.ApparmorProfile); err != nil {
-			return errors.Wrap(err, "unable to load AppArmor profile")
+			return fmt.Errorf("unable to load AppArmor profile: %w", err)
 		}
 
 		if err := c.blockioConfig.Load(c.BlockIOConfigFile); err != nil {
-			return errors.Wrap(err, "blockio configuration")
+			return fmt.Errorf("blockio configuration: %w", err)
 		}
 
+		c.blockioConfig.SetReload(c.BlockIOReload)
+
 		if err := c.rdtConfig.Load(c.RdtConfigFile); err != nil {
-			return errors.Wrap(err, "rdt configuration")
+			return fmt.Errorf("rdt configuration: %w", err)
 		}
+	}
+
+	if err := c.TranslateMonitorFields(onExecution); err != nil {
+		return fmt.Errorf("monitor fields translation: %w", err)
 	}
 
 	return nil
 }
 
-func defaultRuntimeHandler() *RuntimeHandler {
+// ValidateDefaultRuntime ensures that the default runtime is set and valid.
+func (c *RuntimeConfig) ValidateDefaultRuntime() error {
+	// If the default runtime is defined in the runtime entry table, then it is valid
+	if _, ok := c.Runtimes[c.DefaultRuntime]; ok {
+		return nil
+	}
+
+	// If a non-empty runtime does not exist in the runtime entry table, this is an error.
+	if c.DefaultRuntime != "" {
+		return fmt.Errorf("default_runtime set to %q, but no runtime entry table [crio.runtime.runtimes.%s] was found", c.DefaultRuntime, c.DefaultRuntime)
+	}
+
+	// Set the default runtime to "crun" if default_runtime is not set
+	logrus.Debugf("Defaulting to %q as the runtime since default_runtime is not set", DefaultRuntime)
+	// The default config sets crun and its path in the runtimes map, so check for that
+	// first. If it does not exist then we add runc + its path to the runtimes map.
+	if _, ok := c.Runtimes[DefaultRuntime]; !ok {
+		c.Runtimes[DefaultRuntime] = defaultRuntimeHandler(c.cgroupManager.IsSystemd())
+	}
+	// Set the DefaultRuntime to runc so we don't fail further along in the code
+	c.DefaultRuntime = DefaultRuntime
+
+	return nil
+}
+
+// getDefaultMonitorGroup checks which defaultmonitor group to use
+// for cgroupfs it is empty.
+func getDefaultMonitorGroup(isSystemd bool) string {
+	monitorGroup := ""
+	if isSystemd {
+		monitorGroup = defaultMonitorCgroup
+	}
+
+	return monitorGroup
+}
+
+func defaultRuntimeHandler(isSystemd bool) *RuntimeHandler {
 	return &RuntimeHandler{
 		RuntimeType: DefaultRuntimeType,
 		RuntimeRoot: DefaultRuntimeRoot,
 		AllowedAnnotations: []string{
 			annotations.OCISeccompBPFHookAnnotation,
+			annotations.DevicesAnnotation,
 		},
 		MonitorEnv: []string{
 			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		},
-		MonitorCgroup: defaultMonitorCgroup,
+		ContainerMinMemory: units.BytesSize(defaultContainerMinMemoryCrun),
+		MonitorCgroup:      getDefaultMonitorGroup(isSystemd),
 	}
 }
 
-// ValidateRuntimes checks every runtime if its members are valid
+// ValidateRuntimes checks every runtime if its members are valid.
 func (c *RuntimeConfig) ValidateRuntimes() error {
 	var failedValidation []string
+
+	// Update the default runtime paths in all runtimes that are asking for inheritance
+	for name := range c.Runtimes {
+		if !c.Runtimes[name].InheritDefaultRuntime {
+			continue
+		}
+
+		logrus.Infof("Inheriting runtime configuration %q from %q", name, c.DefaultRuntime)
+
+		c.Runtimes[name].RuntimePath = c.Runtimes[c.DefaultRuntime].RuntimePath
+		// An empty RuntimePath causes cri-o to look for a binary named `name`,
+		// but we inherit from the default - look for binary called c.DefaultRuntime
+		// The validator will check the binary is valid below.
+		if c.Runtimes[name].RuntimePath == "" {
+			executable, err := exec.LookPath(c.DefaultRuntime)
+			if err == nil {
+				c.Runtimes[name].RuntimePath = executable
+			}
+		}
+
+		c.Runtimes[name].RuntimeType = c.Runtimes[c.DefaultRuntime].RuntimeType
+		c.Runtimes[name].RuntimeConfigPath = c.Runtimes[c.DefaultRuntime].RuntimeConfigPath
+		c.Runtimes[name].RuntimeRoot = c.Runtimes[c.DefaultRuntime].RuntimeRoot
+	}
 
 	// Validate if runtime_path does exist for each runtime
 	for name, handler := range c.Runtimes {
@@ -1115,13 +1397,8 @@ func (c *RuntimeConfig) ValidateRuntimes() error {
 				return err
 			}
 
-			logrus.Warnf("'%s is being ignored due to: %q", name, err)
+			logrus.Warnf("Runtime handler %q is being ignored due to: %v", name, err)
 			failedValidation = append(failedValidation, name)
-		}
-		if handler.RuntimeType == DefaultRuntimeType || handler.RuntimeType == "" {
-			if err := c.TranslateMonitorFields(handler); err != nil {
-				return fmt.Errorf("failed to translate monitor fields for runtime %s: %v", name, err)
-			}
 		}
 	}
 
@@ -1129,38 +1406,122 @@ func (c *RuntimeConfig) ValidateRuntimes() error {
 		delete(c.Runtimes, invalidHandlerName)
 	}
 
+	c.initializeRuntimeFeatures()
+
+	return nil
+}
+
+func (c *RuntimeConfig) initializeRuntimeFeatures() {
+	for name, handler := range c.Runtimes {
+		versionOutput, err := cmdrunner.CombinedOutput(handler.RuntimePath, "--version")
+		if err != nil {
+			logrus.Errorf("Unable to determine version of runtime handler %q: %v", name, err)
+
+			continue
+		}
+
+		versionString := strings.ReplaceAll(strings.TrimSpace(string(versionOutput)), "\n", ", ")
+		logrus.Infof("Using runtime handler %s", versionString)
+
+		// If this returns an error, we just ignore it and assume the features sub-command is
+		// not supported by the runtime.
+		output, err := cmdrunner.CombinedOutput(handler.RuntimePath, "features")
+		if err != nil {
+			logrus.Errorf("Getting %s OCI runtime features failed: %s: %v", handler.RuntimePath, output, err)
+
+			continue
+		}
+
+		// Ignore error if we can't load runtime features.
+		if err := handler.LoadRuntimeFeatures(output); err != nil {
+			logrus.Errorf("Unable to load OCI features for runtime handler %q: %v", name, err)
+
+			continue
+		}
+
+		if handler.RuntimeSupportsIDMap() {
+			logrus.Debugf("Runtime handler %q supports User and Group ID-mappings", name)
+		}
+
+		// Recursive Read-only (RRO) mounts require runtime handler support,
+		// such as runc v1.1 or crun v1.4. For Linux, the minimum kernel
+		// version 5.12 or a kernel with the necessary changes backported
+		// is required.
+		rro := handler.RuntimeSupportsMountFlag("rro")
+		if rro {
+			logrus.Debugf("Runtime handler %q supports Recursive Read-only (RRO) mounts", name)
+
+			// A given runtime might support Recursive Read-only (RRO) mounts,
+			// but the current kernel might not.
+			if err := checkKernelRROMountSupport(); err != nil {
+				logrus.Warnf("Runtime handler %q supports Recursive Read-only (RRO) mounts, but kernel does not: %v", name, err)
+
+				rro = false
+			}
+		}
+
+		handler.features.RecursiveReadOnlyMounts = rro
+	}
+}
+
+func (c *RuntimeConfig) TranslateMonitorFields(onExecution bool) error {
+	for name, handler := range c.Runtimes {
+		if handler.RuntimeType == DefaultRuntimeType || handler.RuntimeType == "" {
+			if err := c.TranslateMonitorFieldsForHandler(handler, onExecution); err != nil {
+				return fmt.Errorf("failed to translate monitor fields for runtime %s: %w", name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
 // TranslateMonitorFields is a transitional function that takes the configuration fields
 // previously held by the RuntimeConfig that are being moved inside of the runtime handler structure.
-func (c *RuntimeConfig) TranslateMonitorFields(handler *RuntimeHandler) error {
+func (c *RuntimeConfig) TranslateMonitorFieldsForHandler(handler *RuntimeHandler, onExecution bool) error {
 	if c.ConmonCgroup != "" {
+		logrus.Debugf("Monitor cgroup %s is becoming %s", handler.MonitorCgroup, c.ConmonCgroup)
 		handler.MonitorCgroup = c.ConmonCgroup
 	}
+
 	if c.Conmon != "" {
-		logrus.Warnf("'%s is becoming %s", c.Conmon, handler.MonitorPath)
+		logrus.Debugf("Monitor path %s is becoming %s", handler.MonitorPath, c.Conmon)
 		handler.MonitorPath = c.Conmon
 	}
+
 	if len(c.ConmonEnv) != 0 {
 		handler.MonitorEnv = c.ConmonEnv
 	}
-	if err := c.ValidateConmonPath("conmon", handler); err != nil {
-		return err
-	}
-	if !c.cgroupManager.IsSystemd() {
-		if handler.MonitorCgroup != utils.PodCgroupName && handler.MonitorCgroup != "" {
-			return errors.New("cgroupfs manager conmon cgroup should be 'pod' or empty")
-		}
-		return nil
-	}
-	// If empty, assume default
-	if handler.MonitorCgroup == "" {
+
+	// If systemd and empty, assume default
+	if c.cgroupManager.IsSystemd() && handler.MonitorCgroup == "" {
 		handler.MonitorCgroup = defaultMonitorCgroup
 	}
-	if !(handler.MonitorCgroup == utils.PodCgroupName || strings.HasSuffix(handler.MonitorCgroup, ".slice")) {
-		return errors.New("conmon cgroup should be 'pod' or a systemd slice")
+
+	if onExecution {
+		if err := c.ValidateConmonPath("conmon", handler); err != nil {
+			return err
+		}
+		// if cgroupManager is cgroupfs
+		if !c.cgroupManager.IsSystemd() {
+			// handler.MonitorCgroup having value "" is valid
+			// but the default value system.slice is not
+			if handler.MonitorCgroup == defaultMonitorCgroup {
+				handler.MonitorCgroup = ""
+			}
+
+			if handler.MonitorCgroup != utils.PodCgroupName && handler.MonitorCgroup != "" {
+				return fmt.Errorf("cgroupfs manager conmon cgroup should be 'pod' or empty, but got: '%s'", handler.MonitorCgroup)
+			}
+
+			return nil
+		}
+
+		if !(handler.MonitorCgroup == utils.PodCgroupName || strings.HasSuffix(handler.MonitorCgroup, ".slice")) {
+			return errors.New("conmon cgroup should be 'pod' or a systemd slice")
+		}
 	}
+
 	return nil
 }
 
@@ -1169,10 +1530,12 @@ func (c *RuntimeConfig) TranslateMonitorFields(handler *RuntimeHandler) error {
 // In any other case, it simply checks if `Conmon` is a valid file.
 func (c *RuntimeConfig) ValidateConmonPath(executable string, handler *RuntimeHandler) error {
 	var err error
+
 	handler.MonitorPath, err = validateExecutablePath(executable, handler.MonitorPath)
 	if err != nil {
 		return err
 	}
+
 	c.conmonManager, err = conmonmgr.New(handler.MonitorPath)
 
 	return err
@@ -1186,44 +1549,43 @@ func (c *RuntimeConfig) ConmonSupportsLogGlobalSizeMax() bool {
 	return c.conmonManager.SupportsLogGlobalSizeMax()
 }
 
-func (c *RuntimeConfig) ValidatePinnsPath(executable string) error {
-	var err error
-	c.PinnsPath, err = validateExecutablePath(executable, c.PinnsPath)
+func validateCriuInPath() error {
+	_, err := validateExecutablePath("criu", "")
 
 	return err
 }
 
-// Seccomp returns the seccomp configuration
+// Seccomp returns the seccomp configuration.
 func (c *RuntimeConfig) Seccomp() *seccomp.Config {
 	return c.seccompConfig
 }
 
-// AppArmor returns the AppArmor configuration
+// AppArmor returns the AppArmor configuration.
 func (c *RuntimeConfig) AppArmor() *apparmor.Config {
 	return c.apparmorConfig
 }
 
-// BlockIO returns the blockio configuration
+// BlockIO returns the blockio configuration.
 func (c *RuntimeConfig) BlockIO() *blockio.Config {
 	return c.blockioConfig
 }
 
-// Rdt returns the RDT configuration
+// Rdt returns the RDT configuration.
 func (c *RuntimeConfig) Rdt() *rdt.Config {
 	return c.rdtConfig
 }
 
-// CgroupManager returns the CgroupManager configuration
+// CgroupManager returns the CgroupManager configuration.
 func (c *RuntimeConfig) CgroupManager() cgmgr.CgroupManager {
 	return c.cgroupManager
 }
 
-// NamespaceManager returns the NamespaceManager configuration
+// NamespaceManager returns the NamespaceManager configuration.
 func (c *RuntimeConfig) NamespaceManager() *nsmgr.NamespaceManager {
 	return c.namespaceManager
 }
 
-// Ulimits returns the Ulimits configuration
+// Ulimits returns the Ulimits configuration.
 func (c *RuntimeConfig) Ulimits() []ulimits.Ulimit {
 	return c.ulimitsConfig.Ulimits()
 }
@@ -1232,20 +1594,54 @@ func (c *RuntimeConfig) Devices() []device.Device {
 	return c.deviceConfig.Devices()
 }
 
+func (c *RuntimeConfig) CheckpointRestore() bool {
+	return c.EnableCriuSupport
+}
+
 func validateExecutablePath(executable, currentPath string) (string, error) {
 	if currentPath == "" {
 		path, err := exec.LookPath(executable)
 		if err != nil {
 			return "", err
 		}
+
 		logrus.Debugf("Using %s from $PATH: %s", executable, path)
+
 		return path, nil
 	}
+
 	if _, err := os.Stat(currentPath); err != nil {
-		return "", errors.Wrapf(err, "invalid %s path", executable)
+		return "", fmt.Errorf("invalid %s path: %w", executable, err)
 	}
+
 	logrus.Infof("Using %s executable: %s", executable, currentPath)
+
 	return currentPath, nil
+}
+
+// Validate is the main entry point for image configuration validation.
+// It returns an error on validation failure, otherwise nil.
+func (c *ImageConfig) Validate(onExecution bool) error {
+	if !filepath.IsAbs(c.SignaturePolicyDir) {
+		return fmt.Errorf("signature policy dir %q is not absolute", c.SignaturePolicyDir)
+	}
+
+	if _, err := c.ParsePauseImage(); err != nil {
+		return fmt.Errorf("invalid pause image %q: %w", c.PauseImage, err)
+	}
+
+	if onExecution {
+		if err := os.MkdirAll(c.SignaturePolicyDir, 0o755); err != nil {
+			return fmt.Errorf("cannot create signature policy dir: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ParsePauseImage parses the .PauseImage value as into a validated, well-typed value.
+func (c *ImageConfig) ParsePauseImage() (references.RegistryImageReference, error) {
+	return references.ParseRegistryImageReferenceFromOutOfProcessData(c.PauseImage)
 }
 
 // Validate is the main entry point for network configuration validation.
@@ -1258,23 +1654,24 @@ func (c *NetworkConfig) Validate(onExecution bool) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				if err = os.MkdirAll(c.NetworkDir, 0o755); err != nil {
-					return errors.Wrapf(err, "Cannot create network_dir: %s", c.NetworkDir)
+					return fmt.Errorf("cannot create network_dir: %s: %w", c.NetworkDir, err)
 				}
 			} else {
-				return errors.Wrapf(err, "invalid network_dir: %s", c.NetworkDir)
+				return fmt.Errorf("invalid network_dir: %s: %w", c.NetworkDir, err)
 			}
 		}
 
 		for _, pluginDir := range c.PluginDirs {
 			if err := os.MkdirAll(pluginDir, 0o755); err != nil {
-				return errors.Wrap(err, "invalid plugin_dirs entry")
+				return fmt.Errorf("invalid plugin_dirs entry: %w", err)
 			}
 		}
 		// While the plugin_dir option is being deprecated, we need this check
 		if c.PluginDir != "" {
 			logrus.Warnf("The config field plugin_dir is being deprecated. Please use plugin_dirs instead")
+
 			if err := os.MkdirAll(c.PluginDir, 0o755); err != nil {
-				return errors.Wrap(err, "invalid plugin_dir entry")
+				return fmt.Errorf("invalid plugin_dir entry: %w", err)
 			}
 			// Append PluginDir to PluginDirs, so from now on we can operate in terms of PluginDirs and not worry
 			// about missing cases.
@@ -1290,8 +1687,9 @@ func (c *NetworkConfig) Validate(onExecution bool) error {
 			c.CNIDefaultNetwork, c.NetworkDir, c.PluginDirs...,
 		)
 		if err != nil {
-			return errors.Wrap(err, "initialize CNI plugin")
+			return fmt.Errorf("initialize CNI plugin: %w", err)
 		}
+
 		c.cniManager = cniManager
 	}
 
@@ -1300,16 +1698,27 @@ func (c *NetworkConfig) Validate(onExecution bool) error {
 
 // Validate checks if the whole runtime is valid.
 func (r *RuntimeHandler) Validate(name string) error {
+	if err := r.ValidateRuntimeType(name); err != nil {
+		return err
+	}
+
 	if err := r.ValidateRuntimePath(name); err != nil {
 		return err
 	}
+
 	if err := r.ValidateRuntimeConfigPath(name); err != nil {
 		return err
 	}
+
 	if err := r.ValidateRuntimeAllowedAnnotations(); err != nil {
 		return err
 	}
-	return r.ValidateRuntimeType(name)
+
+	if err := r.ValidateContainerMinMemory(name); err != nil {
+		logrus.Errorf("Unable to set minimum container memory for runtime handler %q: %v", name, err)
+	}
+
+	return r.ValidateNoSyncLog()
 }
 
 func (r *RuntimeHandler) ValidateRuntimeVMBinaryPattern() bool {
@@ -1334,13 +1743,13 @@ func (r *RuntimeHandler) ValidateRuntimePath(name string) error {
 	if r.RuntimePath == "" {
 		executable, err := exec.LookPath(name)
 		if err != nil {
-			return errors.Wrapf(err, "%q not found in $PATH", name)
+			return fmt.Errorf("%q not found in $PATH: %w", name, err)
 		}
+
 		r.RuntimePath = executable
 		logrus.Debugf("Using runtime executable from $PATH %q", executable)
 	} else if _, err := os.Stat(r.RuntimePath); err != nil && os.IsNotExist(err) {
-		return fmt.Errorf("invalid runtime_path for runtime '%s': %q",
-			name, err)
+		return fmt.Errorf("invalid runtime_path for runtime '%s': %w", name, err)
 	}
 
 	ok := r.ValidateRuntimeVMBinaryPattern()
@@ -1352,15 +1761,17 @@ func (r *RuntimeHandler) ValidateRuntimePath(name string) error {
 	logrus.Debugf(
 		"Found valid runtime %q for runtime_path %q", name, r.RuntimePath,
 	)
+
 	return nil
 }
 
 // ValidateRuntimeType checks if the `RuntimeType` is valid.
 func (r *RuntimeHandler) ValidateRuntimeType(name string) error {
 	if r.RuntimeType != "" && r.RuntimeType != DefaultRuntimeType && r.RuntimeType != RuntimeTypeVM && r.RuntimeType != RuntimeTypePod {
-		return errors.Errorf("invalid `runtime_type` %q for runtime %q",
+		return fmt.Errorf("invalid `runtime_type` %q for runtime %q",
 			r.RuntimeType, name)
 	}
+
 	return nil
 }
 
@@ -1369,13 +1780,15 @@ func (r *RuntimeHandler) ValidateRuntimeConfigPath(name string) error {
 	if r.RuntimeConfigPath == "" {
 		return nil
 	}
+
 	if r.RuntimeType != RuntimeTypeVM {
-		return fmt.Errorf("runtime_config_path can only be used with the 'vm' runtime type")
+		return errors.New("runtime_config_path can only be used with the 'vm' runtime type")
 	}
+
 	if _, err := os.Stat(r.RuntimeConfigPath); err != nil && os.IsNotExist(err) {
-		return fmt.Errorf("invalid runtime_config_path for runtime '%s': %q",
-			name, err)
+		return fmt.Errorf("invalid runtime_config_path for runtime '%s': %w", name, err)
 	}
+
 	return nil
 }
 
@@ -1384,52 +1797,159 @@ func (r *RuntimeHandler) ValidateRuntimeAllowedAnnotations() error {
 	if err != nil {
 		return err
 	}
+
 	logrus.Debugf(
 		"Allowed annotations for runtime: %v", r.AllowedAnnotations,
 	)
+
 	r.DisallowedAnnotations = disallowed
+
 	return nil
 }
 
-func validateAllowedAndGenerateDisallowedAnnotations(allowed []string) (disallowed []string, _ error) {
-	disallowedMap := make(map[string]struct{})
-	for _, ann := range annotations.AllAllowedAnnotations {
-		disallowedMap[ann] = struct{}{}
+// ValidateNoSyncLog checks if the `NoSyncLog` is used with the correct `RuntimeType` ('oci').
+func (r *RuntimeHandler) ValidateNoSyncLog() error {
+	if !r.NoSyncLog {
+		return nil
 	}
+	// no_sync_log can only be used with the 'oci' runtime type.
+	// This means that the runtime type must be set to 'oci' or left empty
+	if r.RuntimeType == DefaultRuntimeType || r.RuntimeType == "" {
+		logrus.Warn("NoSyncLog is enabled. This can lead to lost log data")
+
+		return nil
+	}
+
+	return fmt.Errorf("no_sync_log is only allowed with runtime type 'oci', runtime type is '%s'", r.RuntimeType)
+}
+
+// ValidateContainerMinMemory sets the minimum container memory for a given runtime.
+// assigns defaultContainerMinMemory if no container_min_memory provided.
+func (r *RuntimeHandler) ValidateContainerMinMemory(name string) error {
+	if r.ContainerMinMemory == "" {
+		r.ContainerMinMemory = units.BytesSize(defaultContainerMinMemory)
+	}
+
+	memorySize, err := units.RAMInBytes(r.ContainerMinMemory)
+	if err != nil {
+		err = fmt.Errorf("unable to set runtime memory to %q: %w. Setting to %q instead", r.ContainerMinMemory, err, defaultContainerMinMemory)
+		// Fallback to default value if something is wrong with the configured value.
+		r.ContainerMinMemory = units.BytesSize(defaultContainerMinMemory)
+
+		return err
+	}
+
+	logrus.Debugf("Runtime handler %q container minimum memory set to %d bytes", name, memorySize)
+
+	return nil
+}
+
+// LoadRuntimeFeatures loads features for a given runtime handler using the "features"
+// sub-command output, where said output contains a JSON document called "Features
+// Structure" that describes the runtime handler's supported features.
+func (r *RuntimeHandler) LoadRuntimeFeatures(input []byte) error {
+	if err := json.Unmarshal(input, &r.features); err != nil {
+		return fmt.Errorf("unable to unmarshal features structure: %w", err)
+	}
+
+	// All other properties of the Features Structure are optional and might be
+	// either absent, empty, or set to the null value, with the exception of
+	// OCIVersionMin and OCIVersionMax, which are required. Thus, the lack of
+	// them should indicate that the Features Structure document is potentially
+	// not valid.
+	//
+	// See the following for more details about the Features Structure:
+	//   https://github.com/opencontainers/runtime-spec/blob/main/features.md
+	if r.features.OCIVersionMin == "" || r.features.OCIVersionMax == "" {
+		return errors.New("runtime features structure is not valid")
+	}
+
+	return nil
+}
+
+// RuntimeSupportsIDMap returns whether this runtime supports the "runtime features"
+// command, and that the output of that command advertises IDMap mounts as an option.
+func (r *RuntimeHandler) RuntimeSupportsIDMap() bool {
+	if r.features.Linux == nil || r.features.Linux.MountExtensions == nil || r.features.Linux.MountExtensions.IDMap == nil {
+		return false
+	}
+
+	if enabled := r.features.Linux.MountExtensions.IDMap.Enabled; enabled == nil || !*enabled {
+		return false
+	}
+
+	return true
+}
+
+// RuntimeSupportsRROMounts returns whether this runtime supports the Recursive Read-only mount as an option.
+func (r *RuntimeHandler) RuntimeSupportsRROMounts() bool {
+	return r.features.RecursiveReadOnlyMounts
+}
+
+// RuntimeSupportsMountFlag returns whether this runtime supports the specified mount option.
+func (r *RuntimeHandler) RuntimeSupportsMountFlag(flag string) bool {
+	return slices.Contains(r.features.MountOptions, flag)
+}
+
+// RuntimeDefaultAnnotations returns the default annotations for this handler.
+func (r *RuntimeHandler) RuntimeDefaultAnnotations() map[string]string {
+	return r.DefaultAnnotations
+}
+
+func validateAllowedAndGenerateDisallowedAnnotations(allowed []string) (disallowed []string, _ error) {
+	disallowedMap := make(map[string]bool)
+	for _, ann := range annotations.AllAllowedAnnotations {
+		disallowedMap[ann] = false
+	}
+
 	for _, ann := range allowed {
 		if _, ok := disallowedMap[ann]; !ok {
-			return nil, errors.Errorf("invalid allowed_annotation: %s", ann)
+			return nil, fmt.Errorf("invalid allowed_annotation: %s", ann)
 		}
-		delete(disallowedMap, ann)
+
+		disallowedMap[ann] = true
 	}
+
 	disallowed = make([]string, 0, len(disallowedMap))
-	for ann := range disallowedMap {
-		disallowed = append(disallowed, ann)
+
+	for ann, allowed := range disallowedMap {
+		if !allowed {
+			disallowed = append(disallowed, ann)
+		}
 	}
+
 	return disallowed, nil
 }
 
-// CNIPlugin returns the network configuration CNI plugin
+// CNIPlugin returns the network configuration CNI plugin.
 func (c *NetworkConfig) CNIPlugin() ocicni.CNIPlugin {
 	return c.cniManager.Plugin()
 }
 
-// CNIPluginReadyOrError returns whether the cni plugin is ready
+// CNIPluginReadyOrError returns whether the cni plugin is ready.
 func (c *NetworkConfig) CNIPluginReadyOrError() error {
 	return c.cniManager.ReadyOrError()
 }
 
-// CNIPluginAddWatcher returns the network configuration CNI plugin
+// CNIPluginAddWatcher returns the network configuration CNI plugin.
 func (c *NetworkConfig) CNIPluginAddWatcher() chan bool {
 	return c.cniManager.AddWatcher()
 }
 
-// CNIManagerShutdown shuts down the CNI Manager
+// CNIPluginGC calls the plugin's GC to clean up any resources concerned with
+// stale pods (pod other than the ones provided by validPodList). The call to
+// the plugin will be deferred until it is ready logging any errors then and
+// returning nil error here.
+func (c *Config) CNIPluginGC(ctx context.Context, validPodList cnimgr.PodNetworkLister) error {
+	return c.cniManager.GC(ctx, validPodList)
+}
+
+// CNIManagerShutdown shuts down the CNI Manager.
 func (c *NetworkConfig) CNIManagerShutdown() {
 	c.cniManager.Shutdown()
 }
 
-// SetSingleConfigPath set single config path for config
+// SetSingleConfigPath set single config path for config.
 func (c *Config) SetSingleConfigPath(singleConfigPath string) {
 	c.singleConfigPath = singleConfigPath
 }

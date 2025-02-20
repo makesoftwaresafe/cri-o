@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 
 	"github.com/containers/image/v5/copy"
@@ -9,12 +8,12 @@ import (
 	"github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/rootless"
 	sstorage "github.com/containers/storage"
 	"github.com/containers/storage/pkg/reexec"
-	"github.com/cri-o/cri-o/internal/log"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
+
+	"github.com/cri-o/cri-o/internal/log"
 )
 
 func main() {
@@ -74,7 +73,9 @@ func main() {
 
 	app.Action = func(c *cli.Context) error {
 		var store sstorage.Store
+
 		var ref, importRef, exportRef types.ImageReference
+
 		var err error
 
 		debug := c.Bool("debug")
@@ -88,7 +89,7 @@ func main() {
 		importFrom := c.String("import-from")
 		exportTo := c.String("export-to")
 
-		ctx := context.Background()
+		ctx := c.Context
 
 		if debug {
 			logrus.SetLevel(logrus.DebugLevel)
@@ -98,28 +99,30 @@ func main() {
 
 		if imageName != "" {
 			if rootDir == "" && runrootDir != "" {
-				log.Errorf(ctx, "Must set --root and --runroot, or neither")
-				os.Exit(1)
+				log.Fatalf(ctx, "Must set --root and --runroot, or neither")
 			}
+
 			if rootDir != "" && runrootDir == "" {
-				log.Errorf(ctx, "Must set --root and --runroot, or neither")
-				os.Exit(1)
+				log.Fatalf(ctx, "Must set --root and --runroot, or neither")
 			}
-			storeOptions, err := sstorage.DefaultStoreOptions(rootless.IsRootless(), rootless.GetRootlessUID())
+
+			storeOptions, err := sstorage.DefaultStoreOptions()
 			if err != nil {
 				return err
 			}
+
 			if rootDir != "" && runrootDir != "" {
 				storeOptions.GraphDriverName = storageDriver
 				storeOptions.GraphDriverOptions = storageOptions
 				storeOptions.GraphRoot = rootDir
 				storeOptions.RunRoot = runrootDir
 			}
+
 			store, err = sstorage.GetStore(storeOptions)
 			if err != nil {
-				log.Errorf(ctx, "Error opening storage: %v", err)
-				os.Exit(1)
+				log.Fatalf(ctx, "Error opening storage: %v", err)
 			}
+
 			defer func() {
 				_, err = store.Shutdown(false)
 				if err != nil {
@@ -128,47 +131,47 @@ func main() {
 			}()
 
 			storage.Transport.SetStore(store)
+
 			ref, err = storage.Transport.ParseStoreReference(store, imageName)
 			if err != nil {
-				log.Errorf(ctx, "Error parsing image name: %v", err)
-				os.Exit(1)
+				log.Fatalf(ctx, "Error parsing image name: %v", err)
 			}
 		}
 
 		systemContext := types.SystemContext{
 			SignaturePolicyPath: signaturePolicy,
 		}
+
 		policy, err := signature.DefaultPolicy(&systemContext)
 		if err != nil {
-			log.Errorf(ctx, "Error loading signature policy: %v", err)
-			os.Exit(1)
+			log.Fatalf(ctx, "Error loading signature policy: %v", err)
 		}
+
 		policyContext, err := signature.NewPolicyContext(policy)
 		if err != nil {
-			log.Errorf(ctx, "Error loading signature policy: %v", err)
-			os.Exit(1)
+			log.Fatalf(ctx, "Error loading signature policy: %v", err)
 		}
+
 		defer func() {
 			err = policyContext.Destroy()
 			if err != nil {
 				log.Fatalf(ctx, "Unable to destroy policy context: %v", err)
 			}
 		}()
+
 		options := &copy.Options{}
 
 		if importFrom != "" {
 			importRef, err = alltransports.ParseImageName(importFrom)
 			if err != nil {
-				log.Errorf(ctx, "Error parsing image name %v: %v", importFrom, err)
-				os.Exit(1)
+				log.Fatalf(ctx, "Error parsing image name %v: %v", importFrom, err)
 			}
 		}
 
 		if exportTo != "" {
 			exportRef, err = alltransports.ParseImageName(exportTo)
 			if err != nil {
-				log.Errorf(ctx, "Error parsing image name %v: %v", exportTo, err)
-				os.Exit(1)
+				log.Fatalf(ctx, "Error parsing image name %v: %v", exportTo, err)
 			}
 		}
 
@@ -176,37 +179,35 @@ func main() {
 			if importFrom != "" {
 				_, err = copy.Image(ctx, policyContext, ref, importRef, options)
 				if err != nil {
-					log.Errorf(ctx, "Error importing %s: %v", importFrom, err)
-					os.Exit(1)
+					log.Fatalf(ctx, "Error importing %s: %v", importFrom, err)
 				}
 			}
+
 			if addName != "" {
-				destImage, err1 := storage.Transport.GetStoreImage(store, ref)
+				_, destImage, err1 := storage.ResolveReference(ref)
 				if err1 != nil {
-					log.Errorf(ctx, "Error finding image: %v", err1)
-					os.Exit(1)
+					log.Fatalf(ctx, "Error finding image: %v", err1)
 				}
-				names := append([]string{imageName, addName}, destImage.Names...)
-				err = store.SetNames(destImage.ID, names)
+
+				err = store.AddNames(destImage.ID, []string{imageName, addName})
 				if err != nil {
-					log.Errorf(ctx, "Error adding name to %s: %v", imageName, err)
-					os.Exit(1)
+					log.Fatalf(ctx, "Error adding name to %s: %v", imageName, err)
 				}
 			}
+
 			if exportTo != "" {
 				_, err = copy.Image(ctx, policyContext, exportRef, ref, options)
 				if err != nil {
-					log.Errorf(ctx, "Error exporting %s: %v", exportTo, err)
-					os.Exit(1)
+					log.Fatalf(ctx, "Error exporting %s: %v", exportTo, err)
 				}
 			}
 		} else if importFrom != "" && exportTo != "" {
 			_, err = copy.Image(ctx, policyContext, exportRef, importRef, options)
 			if err != nil {
-				log.Errorf(ctx, "Error copying %s to %s: %v", importFrom, exportTo, err)
-				os.Exit(1)
+				log.Fatalf(ctx, "Error copying %s to %s: %v", importFrom, exportTo, err)
 			}
 		}
+
 		return nil
 	}
 

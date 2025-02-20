@@ -124,14 +124,14 @@ function start_crio_with_stopped_pod() {
 	CONTAINER_INTERNAL_WIPE=false start_crio_with_stopped_pod
 	stop_crio_no_clean
 
-	run_podman_with_args run --name test -d quay.io/crio/busybox:latest top
+	run_podman_with_args run --name test -d quay.io/crio/fedora-crio-ci:latest top
 
 	run_crio_wipe
 
 	run_podman_with_args container exists test
 }
 
-@test "do clear everything when shutdown file not found" {
+@test "clear everything when shutdown file not found" {
 	CONTAINER_INTERNAL_WIPE=false start_crio_with_stopped_pod
 	stop_crio_no_clean
 
@@ -146,7 +146,7 @@ function start_crio_with_stopped_pod() {
 	test_crio_wiped_images
 }
 
-@test "do clear podman containers when shutdown file not found" {
+@test "clear podman containers when shutdown file not found" {
 	if [[ -z "$PODMAN_BINARY" ]]; then
 		skip "Podman not installed"
 	fi
@@ -154,7 +154,7 @@ function start_crio_with_stopped_pod() {
 	CONTAINER_INTERNAL_WIPE=false start_crio_with_stopped_pod
 	stop_crio_no_clean
 
-	run_podman_with_args run --name test quay.io/crio/busybox:latest ls
+	run_podman_with_args run --name test quay.io/crio/fedora-crio-ci:latest ls
 	# all podman containers would be stopped after a reboot
 	run_podman_with_args stop -a
 
@@ -163,7 +163,7 @@ function start_crio_with_stopped_pod() {
 
 	run_crio_wipe
 
-	! run_podman_with_args container exists test
+	run ! run_podman_with_args container exists test
 }
 
 @test "fail to clear podman containers when shutdown file not found but container still running" {
@@ -175,15 +175,12 @@ function start_crio_with_stopped_pod() {
 	stop_crio_no_clean
 
 	# all podman containers would be stopped after a reboot
-	run_podman_with_args run --name test -d quay.io/crio/busybox:latest top
+	run_podman_with_args run --name test -d quay.io/crio/fedora-crio-ci:latest top
 
 	rm "$CONTAINER_CLEAN_SHUTDOWN_FILE"
 	rm "$CONTAINER_VERSION_FILE"
 
-	run "$CRIO_BINARY_PATH" --config "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR" wipe
-	echo "$status"
-	echo "$output"
-	[ "$status" -ne 0 ]
+	run ! "$CRIO_BINARY_PATH" --config "$CRIO_CONFIG" -d "$CRIO_CONFIG_DIR" wipe
 }
 
 @test "don't clear containers on a forced restart of crio" {
@@ -272,7 +269,7 @@ function start_crio_with_stopped_pod() {
 	start_crio_with_stopped_pod
 	stop_crio_no_clean
 
-	run_podman_with_args run --name test -d quay.io/crio/busybox:latest top
+	run_podman_with_args run --name test -d quay.io/crio/fedora-crio-ci:latest top
 
 	CONTAINER_INTERNAL_WIPE=true start_crio_no_setup
 
@@ -321,5 +318,61 @@ function start_crio_with_stopped_pod() {
 	sleep 5s
 
 	# make sure network resources were cleaned up
-	! ls "$CNI_RESULTS_DIR"/*"$pod_id"*
+	run ! ls "$CNI_RESULTS_DIR"/*"$pod_id"*
+}
+
+@test "clean up image if corrupted on server restore" {
+	setup_crio
+	touch "$CONTAINER_CLEAN_SHUTDOWN_FILE.supported"
+
+	# Remove random layer from the storage directory.
+	remove_random_storage_layer
+
+	# Since the clean shutdown supported file is created,
+	# but the clean shutdown file is absent, we will do the
+	# c/storage check/repair.
+	CONTAINER_INTERNAL_REPAIR=true start_crio_no_setup
+
+	# Since one of the layers was removed, the image would be corrupted, so we expect
+	# one to have been removed.
+	num_images=${#IMAGES[@]}
+
+	# We start with $num_images images, and remove one with the layer removal above.
+	# `crictl images` adds one additional row for the table header.
+	# Thus, this is really $(crictl images | wc -l) - 1 (for the removed image) + 1 (for the header).
+	[[ $(crictl images | wc -l) == "$num_images" ]]
+}
+
+@test "recover from badly corrupted storage directory" {
+	setup_crio
+	touch "$CONTAINER_CLEAN_SHUTDOWN_FILE".supported
+
+	start_crio_no_setup
+
+	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
+	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_config.json "$TESTDATA"/sandbox_config.json)
+	crictl start "$ctr_id"
+
+	# This will corrupt the storage directory.
+	cp -r "$TESTDIR"/crio/overlay{,.old}
+	umount -R -l -f "$TESTDIR"/crio/overlay
+	rm -Rf "$TESTDIR"/crio/overlay
+	cp -r "$TESTDIR"/crio/overlay{.old,}
+
+	stop_crio_no_clean
+
+	# Remove to trigger internal repair on unclean shutdown.
+	rm -Rf "$CONTAINER_CLEAN_SHUTDOWN_FILE"
+
+	# Should recovery from badly corrupted storage directory gracefully.
+	CONTAINER_INTERNAL_REPAIR=true start_crio_no_setup
+
+	# Storage directory wipe should leave only the metadata behind.
+	size=$(du -sb "$TESTDIR"/crio | cut -f 1)
+
+	# The storage directory wipe did not work if there is more data than 128 KiB left.
+	if ((size > 1024 * 128)); then
+		echo "The CRI-O internal repair storage directory wipe did not work" >&3
+		return 1
+	fi
 }

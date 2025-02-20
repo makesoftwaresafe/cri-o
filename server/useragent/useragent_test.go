@@ -1,12 +1,13 @@
 package useragent_test
 
 import (
-	"github.com/cri-o/cri-o/server/useragent"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/server/useragent"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Useragent", func() {
 	t.Describe("Get", func() {
 		It("should succeed", func() {
@@ -15,7 +16,7 @@ var _ = t.Describe("Useragent", func() {
 			result, err := useragent.Get()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(result).To(SatisfyAll(
 				ContainSubstring("cri-o"),
 				ContainSubstring("os"),

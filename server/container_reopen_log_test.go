@@ -8,7 +8,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("ReopenContainerLog", func() {
 	// Prepare the sut
 	BeforeEach(func() {
@@ -22,13 +22,13 @@ var _ = t.Describe("ReopenContainerLog", func() {
 		It("should fail on invalid container ID", func() {
 			// Given
 			// When
-			err := sut.ReopenContainerLog(
+			_, err := sut.ReopenContainerLog(
 				context.Background(),
 				&types.ReopenContainerLogRequest{},
 			)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

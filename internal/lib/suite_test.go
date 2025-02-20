@@ -3,26 +3,29 @@ package lib_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/sirupsen/logrus"
+	"go.uber.org/mock/gomock"
+	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/cri-o/cri-o/internal/hostport"
 	"github.com/cri-o/cri-o/internal/lib"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/memorystore"
 	"github.com/cri-o/cri-o/internal/oci"
 	libconfig "github.com/cri-o/cri-o/pkg/config"
 	. "github.com/cri-o/cri-o/test/framework"
 	containerstoragemock "github.com/cri-o/cri-o/test/mocks/containerstorage"
 	libmock "github.com/cri-o/cri-o/test/mocks/lib"
 	ocimock "github.com/cri-o/cri-o/test/mocks/oci"
-	"github.com/golang/mock/gomock"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
-	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 )
 
-// TestLib runs the created specs
+// TestLib runs the created specs.
 func TestLib(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunFrameworkSpecs(t, "Lib")
@@ -30,6 +33,7 @@ func TestLib(t *testing.T) {
 
 var (
 	t              *TestFramework
+	config         *libconfig.Config
 	mockCtrl       *gomock.Controller
 	libMock        *libmock.MockIface
 	storeMock      *containerstoragemock.MockStore
@@ -64,9 +68,9 @@ var _ = BeforeSuite(func() {
 			"io.kubernetes.cri-o.IP": "{}",
 			"io.kubernetes.cri-o.NamespaceOptions": "{}",
 			"io.kubernetes.cri-o.SeccompProfilePath": "{}",
-			"io.kubernetes.cri-o.Image": "{}",
-			"io.kubernetes.cri-o.ImageName": "{}",
-			"io.kubernetes.cri-o.ImageRef": "{}",
+			"io.kubernetes.cri-o.Image": "quay.io/image",
+			"io.kubernetes.cri-o.ImageName": "example.com/some-other/deduplicated-name:notlatest",
+			"io.kubernetes.cri-o.ImageRef": "1111111111111111111111111111111111111111111111111111111111111111",
 			"io.kubernetes.cri-o.KubeName": "{}",
 			"io.kubernetes.cri-o.PortMappings": "[]",
 			"io.kubernetes.cri-o.Labels": "{}",
@@ -85,6 +89,8 @@ var _ = BeforeSuite(func() {
 			"io.kubernetes.cri-o.StdinOnce": "{}",
 			"io.kubernetes.cri-o.Volumes": "[{}]",
 			"io.kubernetes.cri-o.HostNetwork": "{}",
+			"io.kubernetes.cri-o.PodLinuxOverhead": "{}",
+			"io.kubernetes.cri-o.PodLinuxResources": "{}",
 			"io.kubernetes.cri-o.CNIResult": "{}"
 		},
 		"linux": {
@@ -106,24 +112,34 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	removeConfig()
 	t.Teardown()
 	mockCtrl.Finish()
+	_ = os.RemoveAll("/tmp/fake-runtime")
 })
 
 func removeState() {
 	_ = os.RemoveAll("state.json")
 }
 
+func removeConfig() {
+	_ = os.RemoveAll("config.json")
+}
+
 func beforeEach() {
 	// Remove old state files
 	removeState()
+	// Remove old config files
+	removeConfig()
 
 	// Only log panics for now
 	logrus.SetLevel(logrus.PanicLevel)
 
 	// Set the config
-	config, err := libconfig.DefaultConfig()
-	Expect(err).To(BeNil())
+	var err error
+	config, err = libconfig.DefaultConfig()
+	Expect(err).ToNot(HaveOccurred())
+
 	config.LogDir = "."
 	config.HooksDir = []string{}
 	// so we have permission to make a directory within it
@@ -136,22 +152,38 @@ func beforeEach() {
 
 	// Setup the sut
 	sut, err = lib.New(context.Background(), libMock)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(sut).NotTo(BeNil())
 
 	// Setup test vars
-	mySandbox, err = sandbox.New(sandboxID, "", "", "", "",
-		make(map[string]string), make(map[string]string), "", "",
-		&types.PodSandboxMetadata{}, "", "", false, "", "", "",
-		[]*hostport.PortMapping{}, false, time.Now(), "")
-	Expect(err).To(BeNil())
+	createdAt := time.Now()
+	sbox := sandbox.NewBuilder()
+	sbox.SetID("sandboxID")
+	sbox.SetLogDir("test")
+	sbox.SetCreatedAt(createdAt)
+
+	err = sbox.SetCRISandbox(sbox.ID(), make(map[string]string), make(map[string]string), &types.PodSandboxMetadata{})
+	if err != nil {
+		panic(err)
+	}
+
+	sbox.SetPrivileged(false)
+	sbox.SetPortMappings([]*hostport.PortMapping{})
+	sbox.SetHostNetwork(false)
+	sbox.SetContainers(memorystore.New[*oci.Container]())
+	sbox.SetCreatedAt(createdAt)
+
+	mySandbox, err = sbox.GetSandbox()
+	if err != nil {
+		panic(err)
+	}
 
 	myContainer, err = oci.NewContainer(containerID, "", "", "",
 		make(map[string]string), make(map[string]string),
-		make(map[string]string), "", "", "",
+		make(map[string]string), "", nil, nil, "",
 		&types.ContainerMetadata{}, sandboxID, false,
 		false, false, "", "", time.Now(), "")
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 }
 
 func mockDirs(manifest []byte) {
@@ -167,13 +199,47 @@ func mockDirs(manifest []byte) {
 }
 
 func addContainerAndSandbox() {
-	Expect(sut.AddSandbox(mySandbox)).To(BeNil())
-	sut.AddContainer(myContainer)
-	Expect(sut.CtrIDIndex().Add(containerID)).To(BeNil())
-	Expect(sut.PodIDIndex().Add(sandboxID)).To(BeNil())
+	ctx := context.TODO()
+	Expect(sut.AddSandbox(ctx, mySandbox)).To(Succeed())
+	sut.AddContainer(ctx, myContainer)
+	Expect(sut.CtrIDIndex().Add(containerID)).To(Succeed())
+	Expect(sut.PodIDIndex().Add(sandboxID)).To(Succeed())
 	myContainer.SetCreated()
 }
 
 func createDummyState() {
-	Expect(os.WriteFile("state.json", []byte("{}"), 0o644)).To(BeNil())
+	Expect(os.WriteFile("state.json", []byte("{}"), 0o644)).To(Succeed())
+}
+
+func createDummyConfig() {
+	Expect(os.WriteFile("config.json", []byte(`{"linux":{},"process":{}}`), 0o644)).To(Succeed())
+}
+
+func mockRuntimeInLibConfig() {
+	echo, err := exec.LookPath("echo")
+	Expect(err).NotTo(HaveOccurred())
+
+	config.Runtimes[config.DefaultRuntime] = &libconfig.RuntimeHandler{
+		RuntimePath: echo,
+	}
+}
+
+func mockRuntimeInLibConfigCheckpoint() {
+	trueCMD, err := exec.LookPath("true")
+	Expect(err).NotTo(HaveOccurred())
+	Expect(os.WriteFile("/tmp/fake-runtime", []byte("#!/bin/bash\n\necho flag needs an argument\nexit 0\n"), 0o755)).To(Succeed())
+
+	config.Runtimes[config.DefaultRuntime] = &libconfig.RuntimeHandler{
+		RuntimePath: "/tmp/fake-runtime",
+		MonitorPath: trueCMD,
+	}
+}
+
+func mockRuntimeToFalseInLibConfig() {
+	falseCMD, err := exec.LookPath("false")
+	Expect(err).NotTo(HaveOccurred())
+
+	config.Runtimes[config.DefaultRuntime] = &libconfig.RuntimeHandler{
+		RuntimePath: falseCMD,
+	}
 }

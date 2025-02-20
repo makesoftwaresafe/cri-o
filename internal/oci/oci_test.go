@@ -1,26 +1,32 @@
 package oci_test
 
 import (
-	"github.com/cri-o/cri-o/internal/oci"
-	"github.com/cri-o/cri-o/pkg/annotations"
-	"github.com/cri-o/cri-o/pkg/config"
+	"context"
+	"os"
+
+	criu "github.com/checkpoint-restore/go-criu/v7/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/cri-o/cri-o/internal/oci"
+	"github.com/cri-o/cri-o/pkg/annotations"
+	libconfig "github.com/cri-o/cri-o/pkg/config"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Oci", func() {
 	t.Describe("New", func() {
 		It("should succeed with default config", func() {
 			// Given
-			c, err := config.DefaultConfig()
-			Expect(err).To(BeNil())
+			c, err := libconfig.DefaultConfig()
+			Expect(err).ToNot(HaveOccurred())
 			// so we have permission to make a directory within it
 			c.ContainerAttachSocketDir = t.MustTempDir("crio")
 
 			// When
 			runtime, err := oci.New(c)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Then
 			Expect(runtime).NotTo(BeNil())
@@ -39,20 +45,20 @@ var _ = t.Describe("Oci", func() {
 			performanceRuntime = "high-performance"
 			vmRuntime          = "kata"
 		)
-		runtimes := config.Runtimes{
-			defaultRuntime: {
+		runtimes := libconfig.Runtimes{
+			defaultRuntime: &libconfig.RuntimeHandler{
 				RuntimePath: "/bin/sh",
 				RuntimeType: "",
 				RuntimeRoot: "/run/runc",
 			},
-			invalidRuntime: {},
-			usernsRuntime: {
+			invalidRuntime: &libconfig.RuntimeHandler{},
+			usernsRuntime: &libconfig.RuntimeHandler{
 				RuntimePath:        "/bin/sh",
 				RuntimeType:        "",
 				RuntimeRoot:        "/run/runc",
 				AllowedAnnotations: []string{annotations.UsernsModeAnnotation},
 			},
-			performanceRuntime: {
+			performanceRuntime: &libconfig.RuntimeHandler{
 				RuntimePath: "/bin/sh",
 				RuntimeType: "",
 				RuntimeRoot: "/run/runc",
@@ -63,7 +69,7 @@ var _ = t.Describe("Oci", func() {
 					annotations.OCISeccompBPFHookAnnotation,
 				},
 			},
-			vmRuntime: {
+			vmRuntime: &libconfig.RuntimeHandler{
 				RuntimePath:                  "/usr/bin/containerd-shim-kata-v2",
 				RuntimeType:                  "vm",
 				RuntimeRoot:                  "/run/vc",
@@ -73,15 +79,16 @@ var _ = t.Describe("Oci", func() {
 		}
 
 		BeforeEach(func() {
-			c, err := config.DefaultConfig()
-			Expect(err).To(BeNil())
-			c.DefaultRuntime = defaultRuntime
-			c.Runtimes = runtimes
+			var err error
+			config, err = libconfig.DefaultConfig()
+			Expect(err).ToNot(HaveOccurred())
+			config.DefaultRuntime = defaultRuntime
+			config.Runtimes = runtimes
 			// so we have permission to make a directory within it
-			c.ContainerAttachSocketDir = t.MustTempDir("crio")
+			config.ContainerAttachSocketDir = t.MustTempDir("crio")
 
-			sut, err = oci.New(c)
-			Expect(err).To(BeNil())
+			sut, err = oci.New(config)
+			Expect(err).ToNot(HaveOccurred())
 			Expect(sut).NotTo(BeNil())
 		})
 
@@ -100,7 +107,7 @@ var _ = t.Describe("Oci", func() {
 			handler, err := sut.ValidateRuntimeHandler(defaultRuntime)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(handler).To(Equal(runtimes[defaultRuntime]))
 		})
 		It("should return an OCI runtime type if none is set", func() {
@@ -109,7 +116,7 @@ var _ = t.Describe("Oci", func() {
 			runtimeType, err := sut.RuntimeType(defaultRuntime)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(runtimeType).To(Equal(""))
 		})
 		It("should return a VM runtime type when it is set", func() {
@@ -118,19 +125,19 @@ var _ = t.Describe("Oci", func() {
 			runtimeType, err := sut.RuntimeType(vmRuntime)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(runtimeType).To(Equal(config.RuntimeTypeVM))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(runtimeType).To(Equal(libconfig.RuntimeTypeVM))
 		})
 		Context("AllowedAnnotations", func() {
 			It("should succeed to return allowed annotation", func() {
 				// Given
-				Expect(runtimes[performanceRuntime].ValidateRuntimeAllowedAnnotations()).To(BeNil())
+				Expect(runtimes[performanceRuntime].ValidateRuntimeAllowedAnnotations()).To(Succeed())
 
 				// When
 				foundAnn, err := sut.AllowedAnnotations(performanceRuntime)
 
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(foundAnn).NotTo(ContainElement(annotations.DevicesAnnotation))
 				Expect(foundAnn).To(ContainElement(annotations.IRQLoadBalancingAnnotation))
 			})
@@ -140,7 +147,7 @@ var _ = t.Describe("Oci", func() {
 				_, err := sut.AllowedAnnotations("invalid")
 
 				// Then
-				Expect(err).NotTo(BeNil())
+				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -150,8 +157,8 @@ var _ = t.Describe("Oci", func() {
 			privileged, err := sut.PrivilegedWithoutHostDevices(vmRuntime)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(privileged).To(Equal(true))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(privileged).To(BeTrue())
 		})
 		It("PrivilegedWithoutHostDevices should be false when runtime invalid", func() {
 			// Given
@@ -159,8 +166,8 @@ var _ = t.Describe("Oci", func() {
 			privileged, err := sut.PrivilegedWithoutHostDevices(invalidRuntime)
 
 			// Then
-			Expect(err).NotTo(BeNil())
-			Expect(privileged).To(Equal(false))
+			Expect(err).To(HaveOccurred())
+			Expect(privileged).To(BeFalse())
 		})
 		It("PrivilegedWithoutHostDevices should be false when runtime is the default", func() {
 			// Given
@@ -168,8 +175,163 @@ var _ = t.Describe("Oci", func() {
 			privileged, err := sut.PrivilegedWithoutHostDevices(defaultRuntime)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(privileged).To(Equal(false))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(privileged).To(BeFalse())
+		})
+		It("CheckpointContainer should succeed", func() {
+			if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+				Skip("Check CRIU: " + err.Error())
+			}
+			// Given
+			beforeEach()
+			defer os.RemoveAll("dump.log")
+			config.Runtimes["runc"] = &libconfig.RuntimeHandler{
+				RuntimePath: "/bin/true",
+			}
+
+			specgen := &specs.Spec{
+				Version: "1.0.0",
+				Process: &specs.Process{
+					SelinuxLabel: "",
+				},
+				Linux: &specs.Linux{
+					MountLabel: "",
+				},
+			}
+			// When
+			err := sut.CheckpointContainer(context.Background(), myContainer, specgen, false)
+
+			// Then
+			Expect(err).ToNot(HaveOccurred())
+		})
+		It("CheckpointContainer should fail", func() {
+			if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+				Skip("Check CRIU: " + err.Error())
+			}
+			// Given
+			defer os.RemoveAll("dump.log")
+			beforeEach()
+			config.Runtimes["runc"] = &libconfig.RuntimeHandler{
+				RuntimePath: "/bin/false",
+			}
+
+			specgen := &specs.Spec{
+				Version: "1.0.0",
+				Process: &specs.Process{
+					SelinuxLabel: "",
+				},
+				Linux: &specs.Linux{
+					MountLabel: "",
+				},
+			}
+			// When
+			err := sut.CheckpointContainer(context.Background(), myContainer, specgen, true)
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("configured runtime does not support checkpoint/restore"))
+		})
+		It("RestoreContainer should fail with destination sandbox detection", func() {
+			if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+				Skip("Check CRIU: " + err.Error())
+			}
+			// Given
+			beforeEach()
+			config.Runtimes["runc"] = &libconfig.RuntimeHandler{
+				RuntimePath: "/bin/true",
+				MonitorPath: "/bin/true",
+			}
+
+			err := os.Mkdir("checkpoint", 0o700)
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll("checkpoint")
+			inventory, err := os.OpenFile("checkpoint/inventory.img", os.O_RDONLY|os.O_CREATE, 0o644)
+			Expect(err).ToNot(HaveOccurred())
+			inventory.Close()
+
+			specgen := &specs.Spec{
+				Version:     "1.0.0",
+				Annotations: map[string]string{"io.kubernetes.cri-o.SandboxID": "sandboxID"},
+				Linux: &specs.Linux{
+					MountLabel: ".",
+				},
+				Process: &specs.Process{
+					SelinuxLabel: "",
+				},
+			}
+			myContainer.SetSpec(specgen)
+
+			// When
+			err = sut.RestoreContainer(context.Background(), myContainer, "no-parent-cgroup-exists", "label")
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed"))
+		})
+		It("RestoreContainer should fail", func() {
+			if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+				Skip("Check CRIU: " + err.Error())
+			}
+			// Given
+			beforeEach()
+			config.Runtimes["runc"] = &libconfig.RuntimeHandler{
+				RuntimePath: "/bin/true",
+				MonitorPath: "/bin/true",
+			}
+
+			specgen := &specs.Spec{
+				Version:     "1.0.0",
+				Annotations: map[string]string{"io.kubernetes.cri-o.SandboxID": "sandboxID"},
+				Linux: &specs.Linux{
+					MountLabel: ".",
+				},
+				Process: &specs.Process{
+					SelinuxLabel: "",
+				},
+			}
+			myContainer.SetSpec(specgen)
+
+			err := os.Mkdir("checkpoint", 0o700)
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll("checkpoint")
+			inventory, err := os.OpenFile("checkpoint/inventory.img", os.O_RDONLY|os.O_CREATE, 0o644)
+			Expect(err).ToNot(HaveOccurred())
+			inventory.Close()
+
+			err = os.WriteFile(
+				"config.json",
+				[]byte(
+					`{"ociVersion": "1.0.0","annotations":`+
+						`{"io.kubernetes.cri-o.SandboxID": "sandboxID"},`+
+						`"linux": {"mountLabel": ""}}`,
+				),
+				0o644,
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer os.RemoveAll("config.json")
+
+			config.Conmon = "/bin/true"
+
+			// When
+			err = sut.RestoreContainer(context.Background(), myContainer, "no-parent-cgroup-exists", "label")
+			defer os.RemoveAll("restore.log")
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("failed"))
+		})
+		It("RestoreContainer should fail with missing inventory", func() {
+			if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+				Skip("Check CRIU: " + err.Error())
+			}
+			// Given
+			beforeEach()
+			// When
+			err := sut.RestoreContainer(context.Background(), myContainer, "no-parent-cgroup-exists", "label")
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(Equal("a complete checkpoint for this container cannot be found, cannot restore: stat checkpoint/inventory.img: no such file or directory"))
 		})
 	})
 })

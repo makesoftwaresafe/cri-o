@@ -19,61 +19,68 @@ func InitKlogShim() {
 
 type logSink struct{}
 
-func (l *logSink) Info(level int, msg string, keysAndValues ...interface{}) {
+func (l *logSink) Info(level int, msg string, keysAndValues ...any) {
 	res := &strings.Builder{}
 	res.WriteString(msg)
 	writeKeysAndValues(res, keysAndValues...)
 	logrus.Debug(res.String())
 }
 
-func (l *logSink) Error(err error, msg string, keysAndValues ...interface{}) {
+func (l *logSink) Error(err error, msg string, keysAndValues ...any) {
 	res := &strings.Builder{}
 	res.WriteString(msg)
+
 	if err != nil {
 		res.WriteString(": ")
 		res.WriteString(err.Error())
 	}
+
 	writeKeysAndValues(res, keysAndValues...)
 	logrus.Error(res.String())
 }
 
-func writeKeysAndValues(b *strings.Builder, keysAndValues ...interface{}) {
+func writeKeysAndValues(b *strings.Builder, keysAndValues ...any) {
+	if len(keysAndValues) == 0 {
+		return
+	}
+
 	const missingValue = "[MISSING]"
+
+	b.WriteString(" (")
+
 	for i := 0; i < len(keysAndValues); i += 2 {
-		var v interface{}
+		var v any
+
 		k := keysAndValues[i]
+
 		if i+1 < len(keysAndValues) {
 			v = keysAndValues[i+1]
 		} else {
 			v = missingValue
 		}
-		if i == 0 {
-			b.WriteString(" (")
-		}
+
 		if i > 0 {
 			b.WriteByte(' ')
 		}
 
 		switch v.(type) {
 		case string, error:
-			b.WriteString(fmt.Sprintf("%s=%q", k, v))
+			fmt.Fprintf(b, "%s=%q", k, v)
 		case []byte:
-			b.WriteString(fmt.Sprintf("%s=%+q", k, v))
+			fmt.Fprintf(b, "%s=%+q", k, v)
 		default:
 			if _, ok := v.(fmt.Stringer); ok {
-				b.WriteString(fmt.Sprintf("%s=%q", k, v))
+				fmt.Fprintf(b, "%s=%q", k, v)
 			} else {
-				b.WriteString(fmt.Sprintf("%s=%+v", k, v))
+				fmt.Fprintf(b, "%s=%+v", k, v)
 			}
 		}
-
-		if i == len(keysAndValues) {
-			b.WriteByte(')')
-		}
 	}
+
+	b.WriteByte(')')
 }
 
-func (l *logSink) Init(logr.RuntimeInfo)                  {}
-func (l *logSink) Enabled(int) bool                       { return true }
-func (l *logSink) WithValues(...interface{}) logr.LogSink { return l }
-func (l *logSink) WithName(string) logr.LogSink           { return l }
+func (l *logSink) Init(logr.RuntimeInfo)          {}
+func (l *logSink) Enabled(int) bool               { return true }
+func (l *logSink) WithValues(...any) logr.LogSink { return l }
+func (l *logSink) WithName(string) logr.LogSink   { return l }

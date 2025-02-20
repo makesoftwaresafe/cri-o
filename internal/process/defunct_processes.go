@@ -1,12 +1,12 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -50,23 +50,28 @@ func DefunctProcessesForPath(path string) (defunctCount uint, retErr error) {
 
 		stat, err := processStats(path, name)
 		if err != nil {
-			logrus.Debugf("Failed to get the status of process with PID %s: %v", name, err)
+			logrus.Warnf("Failed to get the status of process with PID %s: %v", name, err)
+
 			continue
 		}
+
 		if stat.State == "Z" {
-			logrus.Warnf("Found defunct process with PID %s (%s)", name, stat.Comm)
+			logrus.Debugf("Found defunct process with PID %s (%s)", name, stat.Comm)
+
 			defunctCount++
 		}
 	}
+
 	return defunctCount, nil
 }
 
-// processStats returns status information of a process as defined in /proc/[pid]/stat
+// processStats returns status information of a process as defined in /proc/[pid]/stat.
 func processStats(fsPath, pid string) (*Stat, error) {
 	bytes, err := os.ReadFile(filepath.Join(fsPath, pid, "stat"))
 	if err != nil {
 		return nil, err
 	}
+
 	data := string(bytes)
 
 	// /proc/[PID]/stat format is described in proc(5). The second field is process name,
@@ -74,12 +79,12 @@ func processStats(fsPath, pid string) (*Stat, error) {
 	// can have parentheses, so look for the last ')'.
 	i := strings.LastIndexByte(data, ')')
 	if i <= 2 || i >= len(data)-1 {
-		return nil, errors.Errorf("invalid stat data (no comm): %q", data)
+		return nil, fmt.Errorf("invalid stat data (no comm): %q", data)
 	}
 
 	parts := strings.SplitN(data[:i], " (", 2)
 	if len(parts) != 2 {
-		return nil, errors.Errorf("invalid stat data (no comm): %q", data)
+		return nil, fmt.Errorf("invalid stat data (no comm): %q", data)
 	}
 
 	return &Stat{

@@ -1,19 +1,21 @@
 package oci_test
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path"
 	"strconv"
 	"time"
 
 	"github.com/containers/storage/pkg/idtools"
-	"github.com/cri-o/cri-o/internal/oci"
+	"github.com/containers/storage/pkg/unshare"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/oci"
+	"github.com/cri-o/cri-o/internal/storage"
 )
 
 const (
@@ -21,7 +23,7 @@ const (
 	alwaysRunningPid = 1
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Container", func() {
 	// The system under test
 	var sut *oci.Container
@@ -42,18 +44,22 @@ var _ = t.Describe("Container", func() {
 		Expect(len(sut.Labels())).To(BeEquivalentTo(1))
 		Expect(len(sut.Annotations())).To(BeEquivalentTo(1))
 		Expect(len(sut.CrioAnnotations())).To(BeEquivalentTo(1))
-		Expect(sut.Image()).To(Equal("image"))
-		Expect(sut.ImageName()).To(Equal("imageName"))
-		Expect(sut.ImageRef()).To(Equal("imageRef"))
+		Expect(sut.UserRequestedImage()).To(Equal("image"))
+		Expect(sut.SomeNameOfTheImage().StringForOutOfProcessConsumptionOnly()).To(Equal("docker.io/library/image-name:latest"))
+		Expect(sut.ImageID().IDStringForOutOfProcessConsumptionOnly()).To(Equal("2a03a6059f21e150ae84b0973863609494aad70f0a80eaeb64bddd8d92465812"))
 		Expect(sut.Sandbox()).To(Equal("sandbox"))
 		Expect(sut.Dir()).To(Equal("dir"))
+		Expect(sut.CheckpointPath()).To(Equal("dir/checkpoint"))
 		Expect(sut.StatePath()).To(Equal("dir/state.json"))
 		Expect(sut.Metadata()).To(Equal(&types.ContainerMetadata{}))
 		Expect(sut.StateNoLock().Version).To(BeEmpty())
 		Expect(sut.GetStopSignal()).To(Equal("15"))
 		Expect(sut.CreatedAt().UnixNano()).
 			To(BeNumerically("<", time.Now().UnixNano()))
-		Expect(sut.Spoofed()).To(Equal(false))
+		Expect(sut.Spoofed()).To(BeFalse())
+		Expect(sut.Restore()).To(BeFalse())
+		Expect(sut.RestoreArchivePath()).To(Equal(""))
+		Expect(sut.RestoreStorageImageID()).To(BeNil())
 	})
 
 	It("should succeed to set the spec", func() {
@@ -125,13 +131,47 @@ var _ = t.Describe("Container", func() {
 
 	It("should succeed to set start failed", func() {
 		// Given
-		err := fmt.Errorf("error")
+		err := errors.New("error")
 
 		// When
 		sut.SetStartFailed(err)
 
 		// Then
 		Expect(sut.State().Error).To(Equal(err.Error()))
+	})
+
+	It("should succeed to set restore", func() {
+		// Given
+		restore := true
+
+		// When
+		sut.SetRestore(restore)
+
+		// Then
+		Expect(sut.Restore()).To(Equal(restore))
+	})
+
+	It("should succeed to set restore is oci image", func() {
+		// Given
+		storageImageID, err := storage.ParseStorageImageIDFromOutOfProcessData("1111111111111111111111111111111111111111111111111111111111111111")
+		Expect(err).ToNot(HaveOccurred())
+
+		// When
+		sut.SetRestoreStorageImageID(&storageImageID)
+
+		// Then
+		Expect(sut.RestoreStorageImageID()).To(Equal(&storageImageID))
+	})
+
+	It("should succeed to set restore archive", func() {
+		// Given
+		restoreArchive := "image-name"
+
+		// When
+		sut.SetRestoreArchivePath(restoreArchive)
+
+		// Then
+		Expect(sut.RestoreArchivePath()).To(Equal(restoreArchive))
 	})
 
 	It("should succeed to set start failed with nil error", func() {
@@ -147,9 +187,9 @@ var _ = t.Describe("Container", func() {
 		// Given
 		container, err := oci.NewContainer("", "", "", "",
 			map[string]string{}, map[string]string{}, map[string]string{},
-			"", "", "", &types.ContainerMetadata{}, "",
+			"", nil, nil, "", &types.ContainerMetadata{}, "",
 			false, false, false, "", "", time.Now(), "SIGNO")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(container).NotTo(BeNil())
 
 		// When
@@ -163,9 +203,9 @@ var _ = t.Describe("Container", func() {
 		// Given
 		container, err := oci.NewContainer("", "", "", "",
 			map[string]string{}, map[string]string{}, map[string]string{},
-			"", "", "", &types.ContainerMetadata{}, "",
+			"", nil, nil, "", &types.ContainerMetadata{}, "",
 			false, false, false, "", "", time.Now(), "RTMIN+1")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(container).NotTo(BeNil())
 
 		// When
@@ -179,9 +219,9 @@ var _ = t.Describe("Container", func() {
 		// Given
 		container, err := oci.NewContainer("", "", "", "",
 			map[string]string{}, map[string]string{}, map[string]string{},
-			"", "", "", &types.ContainerMetadata{}, "",
+			"", nil, nil, "", &types.ContainerMetadata{}, "",
 			false, false, false, "", "", time.Now(), "SIGTRAP")
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		Expect(container).NotTo(BeNil())
 
 		// When
@@ -191,9 +231,121 @@ var _ = t.Describe("Container", func() {
 		Expect(signal).To(Equal("5"))
 	})
 
+	It("should succeed to set the all container resources", func() {
+		// Given
+		var cpuPeriod uint64 = 100000
+		var cpuQuota int64 = 20000
+		var cpuShares uint64 = 1024
+		cpusetCpus := "0-3,12-15"
+		cpusetMems := "0,1"
+		oomScoreAdj := 100
+		var memoryLimitInBytes int64 = 1024
+		var memorySwapLimitInBytes int64 = 1024
+		hugepageLimits := []specs.LinuxHugepageLimit{
+			{
+				Pagesize: "1KB",
+				Limit:    1024,
+			},
+			{
+				Pagesize: "2KB",
+				Limit:    2048,
+			},
+		}
+		unified := map[string]string{
+			"key1": "value1",
+			"key2": "value2",
+		}
+
+		newSpec := specs.Spec{
+			Linux: &specs.Linux{
+				Resources: &specs.LinuxResources{
+					CPU: &specs.LinuxCPU{
+						Shares: &cpuShares,
+						Quota:  &cpuQuota,
+						Period: &cpuPeriod,
+						Cpus:   cpusetCpus,
+						Mems:   cpusetMems,
+					},
+					Memory: &specs.LinuxMemory{
+						Limit: &memoryLimitInBytes,
+						Swap:  &memorySwapLimitInBytes,
+					},
+					HugepageLimits: hugepageLimits,
+					Unified:        unified,
+				},
+			},
+			Process: &specs.Process{
+				OOMScoreAdj: &oomScoreAdj,
+			},
+		}
+
+		// When
+		sut.SetSpec(&newSpec)
+		containerResources := sut.GetResources()
+
+		// Then
+		Expect(containerResources.Linux.CpuPeriod).To(Equal(int64(cpuPeriod)))
+		Expect(containerResources.Linux.CpuQuota).To(Equal(cpuQuota))
+		Expect(containerResources.Linux.CpuShares).To(Equal(int64(cpuShares)))
+		Expect(containerResources.Linux.CpusetCpus).To(Equal(cpusetCpus))
+		Expect(containerResources.Linux.CpusetMems).To(Equal(cpusetMems))
+		Expect(containerResources.Linux.OomScoreAdj).To(Equal(int64(oomScoreAdj)))
+		Expect(containerResources.Linux.MemoryLimitInBytes).To(Equal(memoryLimitInBytes))
+		Expect(containerResources.Linux.MemorySwapLimitInBytes).To(Equal(memorySwapLimitInBytes))
+		Expect(containerResources.Linux.Unified).To(Equal(unified))
+		for i := range len(containerResources.Linux.HugepageLimits) {
+			Expect(containerResources.Linux.HugepageLimits[i].PageSize).To(Equal(hugepageLimits[i].Pagesize))
+			Expect(containerResources.Linux.HugepageLimits[i].Limit).To(Equal(hugepageLimits[i].Limit))
+		}
+	})
+
+	It("should succeed to set the fewer container resources", func() {
+		// Given
+		var cpuPeriod uint64 = 100000
+		var cpuQuota int64 = 20000
+		var cpuShares uint64 = 1024
+		cpusetCpus := "0-3,12-15"
+		cpusetMems := "0,1"
+		var memoryLimitInBytes int64 = 1024
+		var memorySwapLimitInBytes int64 = 1024
+
+		newSpec := specs.Spec{
+			Linux: &specs.Linux{
+				Resources: &specs.LinuxResources{
+					CPU: &specs.LinuxCPU{
+						Shares: &cpuShares,
+						Quota:  &cpuQuota,
+						Period: &cpuPeriod,
+						Cpus:   cpusetCpus,
+						Mems:   cpusetMems,
+					},
+					Memory: &specs.LinuxMemory{
+						Limit: &memoryLimitInBytes,
+						Swap:  &memorySwapLimitInBytes,
+					},
+				},
+			},
+		}
+
+		// When
+		sut.SetSpec(&newSpec)
+		containerResources := sut.GetResources()
+
+		// Then
+		Expect(containerResources.Linux.CpuPeriod).To(Equal(int64(cpuPeriod)))
+		Expect(containerResources.Linux.CpuQuota).To(Equal(cpuQuota))
+		Expect(containerResources.Linux.CpuShares).To(Equal(int64(cpuShares)))
+		Expect(containerResources.Linux.CpusetCpus).To(Equal(cpusetCpus))
+		Expect(containerResources.Linux.CpusetMems).To(Equal(cpusetMems))
+		Expect(containerResources.Linux.MemoryLimitInBytes).To(Equal(memoryLimitInBytes))
+		Expect(containerResources.Linux.MemorySwapLimitInBytes).To(Equal(memorySwapLimitInBytes))
+		Expect(containerResources.Linux.Unified).To(BeEmpty())
+		Expect(containerResources.Linux.HugepageLimits).To(BeEmpty())
+	})
+
 	t.Describe("FromDisk", func() {
 		BeforeEach(func() {
-			Expect(os.MkdirAll(sut.Dir(), 0o755)).To(BeNil())
+			Expect(os.MkdirAll(sut.Dir(), 0o755)).To(Succeed())
 		})
 		AfterEach(func() {
 			os.RemoveAll(sut.Dir())
@@ -201,25 +353,25 @@ var _ = t.Describe("Container", func() {
 		It("should succeed to get the state from disk", func() {
 			// Given
 			Expect(os.WriteFile(path.Join(sut.Dir(), "state.json"),
-				[]byte("{}"), 0o644)).To(BeNil())
+				[]byte("{}"), 0o644)).To(Succeed())
 
 			// When
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 		It("should succeed when pid set but initialPid not set", func() {
 			// Given
 			Expect(os.WriteFile(path.Join(sut.Dir(), "state.json"), []byte(`
 			{"pid":`+strconv.Itoa(alwaysRunningPid)+`}`),
-				0o644)).To(BeNil())
+				0o644)).To(Succeed())
 
 			// When
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			sutState := sut.State()
 			Expect(sutState.InitStartTime).NotTo(Equal(""))
 			Expect(sutState.InitPid).To(Equal(alwaysRunningPid))
@@ -228,13 +380,13 @@ var _ = t.Describe("Container", func() {
 			// Given
 			Expect(os.WriteFile(path.Join(sut.Dir(), "state.json"), []byte(`
 			{"pid":`+strconv.Itoa(alwaysRunningPid)+`}`),
-				0o644)).To(BeNil())
+				0o644)).To(Succeed())
 
 			// When
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			sutState := sut.State()
 			Expect(sutState.InitStartTime).NotTo(Equal(""))
 			Expect(sutState.InitPid).To(Equal(alwaysRunningPid))
@@ -243,13 +395,13 @@ var _ = t.Describe("Container", func() {
 			// Given
 			Expect(os.WriteFile(path.Join(sut.Dir(), "state.json"), []byte(`
 			{"pid":`+strconv.Itoa(neverRunningPid)+`}`),
-				0o644)).To(BeNil())
+				0o644)).To(Succeed())
 
 			// When
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			sutState := sut.State()
 			Expect(sutState.InitStartTime).To(Equal(""))
 			Expect(sutState.InitPid).To(Equal(0))
@@ -258,13 +410,13 @@ var _ = t.Describe("Container", func() {
 		It("should fail to get the state from disk if invalid json", func() {
 			// Given
 			Expect(os.WriteFile(path.Join(sut.Dir(), "state.json"),
-				[]byte("invalid"), 0o644)).To(BeNil())
+				[]byte("invalid"), 0o644)).To(Succeed())
 
 			// When
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("should fail to get the state from disk if not existing", func() {
@@ -273,81 +425,94 @@ var _ = t.Describe("Container", func() {
 			err := sut.FromDisk()
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 	})
-	t.Describe("ShouldBeStopped", func() {
-		It("should fail to stop if already stopped", func() {
-			// Given
-			state := &oci.ContainerState{}
-			state.Status = oci.ContainerStateStopped
-			sut.SetState(state)
-			// When
-			err := sut.ShouldBeStopped()
-
-			// Then
-			Expect(err).To(Equal(oci.ErrContainerStopped))
-		})
-		It("should fail to stop if paused", func() {
-			// Given
-			state := &oci.ContainerState{}
-			state.Status = oci.ContainerStatePaused
-			sut.SetState(state)
-			// When
-			err := sut.ShouldBeStopped()
-
-			// Then
-			Expect(err).NotTo(Equal(oci.ErrContainerStopped))
-			Expect(err).NotTo(BeNil())
-		})
-		It("should succeed to stop if started", func() {
-			// Given
-			state := &oci.ContainerState{}
-			state.Status = oci.ContainerStateRunning
-			sut.SetState(state)
-			// When
-			err := sut.ShouldBeStopped()
-
-			// Then
-			Expect(err).To(BeNil())
-		})
-	})
-	t.Describe("IsAlive", func() {
-		It("should be false if pid unintialized", func() {
+	t.Describe("Living", func() {
+		It("should be false if pid uninitialized", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = 0
 			sut.SetState(state)
 			// When
-			err := sut.IsAlive()
+			err := sut.Living()
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should succeed if pid is running", func() {
+			if unshare.IsRootless() {
+				Skip("need to run as root")
+			}
+
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = alwaysRunningPid
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 			sut.SetState(state)
 			// When
-			err := sut.IsAlive()
+			err := sut.Living()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 		It("should be false if pid is not running", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = neverRunningPid
 			// SetInitPid will fail because the pid is not running
-			Expect(state.SetInitPid(state.Pid)).NotTo(BeNil())
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
 			sut.SetState(state)
 			// When
-			err := sut.IsAlive()
+			err := sut.Living()
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
+		})
+	})
+	t.Describe("ProcessState", func() {
+		It("should be false if pid uninitialized", func() {
+			// Given
+			state := &oci.ContainerState{}
+			state.Pid = 0
+			sut.SetState(state)
+			// When
+			processState, err := sut.ProcessState()
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(processState).To(BeEmpty())
+		})
+		It("should succeed if pid is running", func() {
+			if unshare.IsRootless() {
+				Skip("need to run as root")
+			}
+
+			// Given
+			state := &oci.ContainerState{}
+			state.Pid = alwaysRunningPid
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
+			sut.SetState(state)
+			// When
+			processState, err := sut.ProcessState()
+
+			// Then
+			Expect(err).ToNot(HaveOccurred())
+			Expect(processState).To(Equal("S")) // A process will be sleeping most of the time.
+		})
+		It("should be false if pid is not running", func() {
+			// Given
+			state := &oci.ContainerState{}
+			state.Pid = neverRunningPid
+			// SetInitPid will fail because the pid is not running
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
+			sut.SetState(state)
+			// When
+			processState, err := sut.ProcessState()
+
+			// Then
+			Expect(err).To(HaveOccurred())
+			Expect(processState).To(BeEmpty())
 		})
 	})
 	t.Describe("Pid", func() {
@@ -357,27 +522,27 @@ var _ = t.Describe("Container", func() {
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(0))
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should fail when pid is negative", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = -1
 			// SetInitPid will fail because the pid is not running
-			Expect(state.SetInitPid(state.Pid)).NotTo(BeNil())
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
 			sut.SetState(state)
 
 			// When
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(0))
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should fail gracefully when pid has been stopped", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = alwaysRunningPid
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 			// a `runtime state ctr` call after the container has been stopped
 			// will set the state pid to 0. However, InitPid never changes
 			// so we have a separate handle for when Pid is 0 but InitPid is not
@@ -388,26 +553,26 @@ var _ = t.Describe("Container", func() {
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(0))
-			Expect(errors.Is(err, oci.ErrNotFound)).To(Equal(true))
+			Expect(errors.Is(err, oci.ErrNotFound)).To(BeTrue())
 		})
 		It("should fail if process is not found", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = neverRunningPid
-			Expect(state.SetInitPid(state.Pid)).NotTo(BeNil())
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
 			sut.SetState(state)
 
 			// When
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(0))
-			Expect(errors.Is(err, oci.ErrNotFound)).To(Equal(true))
+			Expect(errors.Is(err, oci.ErrNotFound)).To(BeTrue())
 		})
 		It("should fail when pid has wrapped", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = alwaysRunningPid
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 			// if InitStartTime != the time the state.InitPid started
 			// pid wrap is assumed to have happened
 			state.InitStartTime = ""
@@ -417,20 +582,24 @@ var _ = t.Describe("Container", func() {
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(0))
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should succeed", func() {
+			if unshare.IsRootless() {
+				Skip("need to run as root")
+			}
+
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = alwaysRunningPid
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 			sut.SetState(state)
 
 			// When
 			pid, err := sut.Pid()
 			// Then
 			Expect(pid).To(Equal(alwaysRunningPid))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 	t.Describe("SetInitPid", func() {
@@ -440,16 +609,16 @@ var _ = t.Describe("Container", func() {
 			// When
 			state.Pid = alwaysRunningPid
 			// Then
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 		})
 		It("should fail if already set", func() {
 			// Given
 			state := &oci.ContainerState{}
 			state.Pid = alwaysRunningPid
 			// When
-			Expect(state.SetInitPid(state.Pid)).To(BeNil())
+			Expect(state.SetInitPid(state.Pid)).To(Succeed())
 			// Then
-			Expect(state.SetInitPid(state.Pid)).NotTo(BeNil())
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
 		})
 		It("should fail if not running", func() {
 			// Given
@@ -457,7 +626,7 @@ var _ = t.Describe("Container", func() {
 			// When
 			state.Pid = neverRunningPid
 			// Then
-			Expect(state.SetInitPid(state.Pid)).NotTo(BeNil())
+			Expect(state.SetInitPid(state.Pid)).NotTo(Succeed())
 		})
 	})
 	t.Describe("GetPidStartTimeFromFile", func() {
@@ -471,40 +640,40 @@ var _ = t.Describe("Container", func() {
 
 			// Then
 			Expect(stime).To(BeEmpty())
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should fail when there are no parenthesis", func() {
 			contents := []byte("1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52")
-			Expect(os.WriteFile(statFile, contents, 0o644)).To(BeNil())
+			Expect(os.WriteFile(statFile, contents, 0o644)).To(Succeed())
 
 			// When
 			stime, err := oci.GetPidStartTimeFromFile(statFile)
 
 			// Then
 			Expect(stime).To(BeEmpty())
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should fail with short file", func() {
 			contents := []byte("1 (2) 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21")
-			Expect(os.WriteFile(statFile, contents, 0o644)).To(BeNil())
+			Expect(os.WriteFile(statFile, contents, 0o644)).To(Succeed())
 
 			// When
 			stime, err := oci.GetPidStartTimeFromFile(statFile)
 
 			// Then
 			Expect(stime).To(BeEmpty())
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 		})
 		It("should succeed to get start time", func() {
 			contents := []byte("1 (2) 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52")
-			Expect(os.WriteFile(statFile, contents, 0o644)).To(BeNil())
+			Expect(os.WriteFile(statFile, contents, 0o644)).To(Succeed())
 
 			// When
 			stime, err := oci.GetPidStartTimeFromFile(statFile)
 
 			// Then
 			Expect(stime).To(Equal("22"))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })
@@ -519,7 +688,7 @@ var _ = t.Describe("SpoofedContainer", func() {
 		Expect(sut.Name()).To(Equal("name"))
 		labels := sut.Labels()
 		Expect(labels["key"]).To(Equal("label"))
-		Expect(sut.Spoofed()).To(Equal(true))
+		Expect(sut.Spoofed()).To(BeTrue())
 		Expect(sut.CreatedAt().UnixNano()).
 			To(BeNumerically("<", time.Now().UnixNano()))
 		Expect(sut.Dir()).To(Equal("dir"))

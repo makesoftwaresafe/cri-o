@@ -7,12 +7,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	rspec "github.com/opencontainers/runtime-spec/specs-go"
-
-	"github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
 	"github.com/opencontainers/runc/libcontainer/devices"
+	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 
 var _ = t.Describe("Container", func() {
@@ -24,7 +22,7 @@ var _ = t.Describe("Container", func() {
 			expectHostDevices            bool
 		}
 		hostDevices, err := devices.HostDevices()
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 
 		tests := []testdata{
 			{
@@ -54,7 +52,6 @@ var _ = t.Describe("Container", func() {
 		}
 
 		for _, test := range tests {
-			test := test
 			It(test.testDescription, func() {
 				// Given
 				config := &types.ContainerConfig{
@@ -73,20 +70,20 @@ var _ = t.Describe("Container", func() {
 						},
 					},
 				}
-				Expect(sut.SetConfig(config, sboxConfig)).To(BeNil())
-				Expect(sut.SetPrivileged()).To(BeNil())
+				Expect(sut.SetConfig(config, sboxConfig)).To(Succeed())
+				Expect(sut.SetPrivileged()).To(Succeed())
 				Expect(sut.Privileged()).To(Equal(test.privileged))
-				Expect(len(hostDevices)).NotTo(Equal(0))
+				Expect(hostDevices).NotTo(BeEmpty())
 
 				// When
 				err := sut.SpecAddDevices(nil, nil, test.privilegedWithoutHostDevices, false)
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 
 				if !test.expectHostDevices {
-					Expect(len(sut.Spec().Config.Linux.Devices)).To(Equal(0))
+					Expect(sut.Spec().Config.Linux.Devices).To(BeEmpty())
 				} else {
-					Expect(len(sut.Spec().Config.Linux.Devices)).To(Equal(len(hostDevices)))
+					Expect(sut.Spec().Config.Linux.Devices).To(HaveLen(len(hostDevices)))
 				}
 			})
 		}
@@ -100,7 +97,7 @@ var _ = t.Describe("Container", func() {
 			expectedDeviceGID                  uint32
 		}
 		hostDevices, err := devices.HostDevices()
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 
 		// Find a host device with uid != gid using first device as fallback.
 		testDevice := hostDevices[0]
@@ -108,6 +105,7 @@ var _ = t.Describe("Container", func() {
 			for _, d := range hostDevices {
 				if d.Uid != d.Gid {
 					testDevice = d
+
 					break
 				}
 			}
@@ -147,7 +145,6 @@ var _ = t.Describe("Container", func() {
 		}
 
 		for _, test := range tests {
-			test := test
 			It(test.testDescription, func() {
 				// Given
 				config := &types.ContainerConfig{
@@ -174,15 +171,15 @@ var _ = t.Describe("Container", func() {
 						},
 					},
 				}
-				Expect(sut.SetConfig(config, sboxConfig)).To(BeNil())
-				Expect(len(hostDevices)).NotTo(Equal(0))
+				Expect(sut.SetConfig(config, sboxConfig)).To(Succeed())
+				Expect(hostDevices).NotTo(BeEmpty())
 
 				// When
 				err := sut.SpecAddDevices(nil, nil, false, test.deviceOwnershipFromSecurityContext)
 				// Then
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 
-				Expect(len(sut.Spec().Config.Linux.Devices)).To(Equal(1))
+				Expect(sut.Spec().Config.Linux.Devices).To(HaveLen(1))
 				Expect(*sut.Spec().Config.Linux.Devices[0].UID).To(Equal(test.expectedDeviceUID))
 				Expect(*sut.Spec().Config.Linux.Devices[0].GID).To(Equal(test.expectedDeviceGID))
 			})
@@ -204,12 +201,17 @@ var _ = t.Describe("Container", func() {
 				}
 			}
 
-			return cdi.GetRegistry(cdi.WithSpecDirs(dir)).Refresh()
+			if err := cdi.Configure(cdi.WithSpecDirs(dir)); err != nil {
+				return err
+			}
+
+			return cdi.Refresh()
 		}
 
 		type testdata struct {
 			testDescription string
 			cdiSpecFiles    []string
+			cdiDevices      []*types.CDIDevice
 			annotations     map[string]string
 			expectError     bool
 			expectDevices   []rspec.LinuxDevice
@@ -217,6 +219,100 @@ var _ = t.Describe("Container", func() {
 		}
 
 		tests := []testdata{
+			// test CDI device injection by dedicated CRI CDIDevices field
+			{
+				testDescription: "Expect no CDI error for nil CDIDevices",
+			},
+			{
+				testDescription: "Expect no CDI error for empty CDIDevices",
+				cdiDevices:      []*types.CDIDevice{},
+			},
+			{
+				testDescription: "Expect CDI error for invalid CDI device reference in CDIDevices",
+				cdiDevices: []*types.CDIDevice{
+					{
+						Name: "foobar",
+					},
+				},
+				expectError: true,
+			},
+			{
+				testDescription: "Expect CDI error for unresolvable CDIDevices",
+				cdiDevices: []*types.CDIDevice{
+					{
+						Name: "vendor1.com/device=no-such-dev",
+					},
+				},
+				expectError: true,
+			},
+			{
+				testDescription: "Expect properly injected resolvable CDIDevices",
+				cdiSpecFiles: []string{
+					`
+cdiVersion: "0.3.0"
+kind: "vendor1.com/device"
+devices:
+  - name: foo
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop8
+          type: b
+          major: 7
+          minor: 8
+      env:
+        - FOO=injected
+containerEdits:
+  env:
+    - "VENDOR1=present"
+`,
+					`
+cdiVersion: "0.3.0"
+kind: "vendor2.com/device"
+devices:
+  - name: bar
+    containerEdits:
+      deviceNodes:
+        - path: /dev/loop9
+          type: b
+          major: 7
+          minor: 9
+      env:
+        - BAR=injected
+containerEdits:
+  env:
+    - "VENDOR2=present"
+`,
+				},
+				cdiDevices: []*types.CDIDevice{
+					{
+						Name: "vendor1.com/device=foo",
+					},
+					{
+						Name: "vendor2.com/device=bar",
+					},
+				},
+				expectDevices: []rspec.LinuxDevice{
+					{
+						Path:  "/dev/loop8",
+						Type:  "b",
+						Major: 7,
+						Minor: 8,
+					},
+					{
+						Path:  "/dev/loop9",
+						Type:  "b",
+						Major: 7,
+						Minor: 9,
+					},
+				},
+				expectEnv: []string{
+					"FOO=injected",
+					"VENDOR1=present",
+					"BAR=injected",
+					"VENDOR2=present",
+				},
+			},
+			// test CDI device injection by annotations
 			{
 				testDescription: "Expect no CDI error for nil annotations",
 			},
@@ -242,7 +338,7 @@ var _ = t.Describe("Container", func() {
 				testDescription: "Expect properly injected resolvable CDI devices",
 				cdiSpecFiles: []string{
 					`
-cdiVersion: "0.2.0"
+cdiVersion: "0.3.0"
 kind: "vendor1.com/device"
 devices:
   - name: foo
@@ -259,7 +355,7 @@ containerEdits:
     - "VENDOR1=present"
 `,
 					`
-cdiVersion: "0.2.0"
+cdiVersion: "0.3.0"
 kind: "vendor2.com/device"
 devices:
   - name: bar
@@ -304,7 +400,6 @@ containerEdits:
 		}
 
 		for _, test := range tests {
-			test := test
 			It(test.testDescription, func() {
 				// Given
 				config := &types.ContainerConfig{
@@ -313,16 +408,17 @@ containerEdits:
 					Linux: &types.LinuxContainerConfig{
 						SecurityContext: &types.LinuxContainerSecurityContext{},
 					},
-					Devices: []*types.Device{},
+					Devices:    []*types.Device{},
+					CDIDevices: test.cdiDevices,
 				}
 				sboxConfig := &types.PodSandboxConfig{
 					Linux: &types.LinuxPodSandboxConfig{
 						SecurityContext: &types.LinuxSandboxSecurityContext{},
 					},
 				}
-				Expect(sut.SetConfig(config, sboxConfig)).To(BeNil())
-				Expect(sut.SetPrivileged()).To(BeNil())
-				Expect(writeCDISpecFiles(test.cdiSpecFiles)).To(BeNil())
+				Expect(sut.SetConfig(config, sboxConfig)).To(Succeed())
+				Expect(sut.SetPrivileged()).To(Succeed())
+				Expect(writeCDISpecFiles(test.cdiSpecFiles)).To(Succeed())
 
 				// When
 				err := sut.SpecAddDevices(nil, nil, false, false)

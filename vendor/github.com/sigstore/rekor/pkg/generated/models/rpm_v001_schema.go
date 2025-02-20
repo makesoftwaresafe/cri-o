@@ -33,7 +33,7 @@ import (
 
 // RpmV001Schema RPM v0.0.1 Schema
 //
-// Schema for RPM entries
+// # Schema for RPM entries
 //
 // swagger:model rpmV001Schema
 type RpmV001Schema struct {
@@ -126,6 +126,7 @@ func (m *RpmV001Schema) ContextValidate(ctx context.Context, formats strfmt.Regi
 func (m *RpmV001Schema) contextValidatePackage(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Package != nil {
+
 		if err := m.Package.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("package")
@@ -142,6 +143,7 @@ func (m *RpmV001Schema) contextValidatePackage(ctx context.Context, formats strf
 func (m *RpmV001Schema) contextValidatePublicKey(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.PublicKey != nil {
+
 		if err := m.PublicKey.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("publicKey")
@@ -188,10 +190,6 @@ type RpmV001SchemaPackage struct {
 	// Values of the RPM headers
 	// Read Only: true
 	Headers map[string]string `json:"headers,omitempty"`
-
-	// Specifies the location of the package; if this is specified, a hash value must also be provided
-	// Format: uri
-	URL strfmt.URI `json:"url,omitempty"`
 }
 
 // Validate validates this rpm v001 schema package
@@ -199,10 +197,6 @@ func (m *RpmV001SchemaPackage) Validate(formats strfmt.Registry) error {
 	var res []error
 
 	if err := m.validateHash(formats); err != nil {
-		res = append(res, err)
-	}
-
-	if err := m.validateURL(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -231,18 +225,6 @@ func (m *RpmV001SchemaPackage) validateHash(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *RpmV001SchemaPackage) validateURL(formats strfmt.Registry) error {
-	if swag.IsZero(m.URL) { // not required
-		return nil
-	}
-
-	if err := validate.FormatOf("package"+"."+"url", "body", "uri", m.URL.String(), formats); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // ContextValidate validate this rpm v001 schema package based on the context it is used
 func (m *RpmV001SchemaPackage) ContextValidate(ctx context.Context, formats strfmt.Registry) error {
 	var res []error
@@ -264,6 +246,11 @@ func (m *RpmV001SchemaPackage) ContextValidate(ctx context.Context, formats strf
 func (m *RpmV001SchemaPackage) contextValidateHash(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Hash != nil {
+
+		if swag.IsZero(m.Hash) { // not required
+			return nil
+		}
+
 		if err := m.Hash.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("package" + "." + "hash")
@@ -307,7 +294,7 @@ type RpmV001SchemaPackageHash struct {
 
 	// The hashing function used to compute the hash value
 	// Required: true
-	// Enum: [sha256]
+	// Enum: ["sha256"]
 	Algorithm *string `json:"algorithm"`
 
 	// The hash value for the package
@@ -411,19 +398,16 @@ func (m *RpmV001SchemaPackageHash) UnmarshalBinary(b []byte) error {
 type RpmV001SchemaPublicKey struct {
 
 	// Specifies the content of the public key inline within the document
+	// Required: true
 	// Format: byte
-	Content strfmt.Base64 `json:"content,omitempty"`
-
-	// Specifies the location of the public key
-	// Format: uri
-	URL strfmt.URI `json:"url,omitempty"`
+	Content *strfmt.Base64 `json:"content"`
 }
 
 // Validate validates this rpm v001 schema public key
 func (m *RpmV001SchemaPublicKey) Validate(formats strfmt.Registry) error {
 	var res []error
 
-	if err := m.validateURL(formats); err != nil {
+	if err := m.validateContent(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -433,12 +417,9 @@ func (m *RpmV001SchemaPublicKey) Validate(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *RpmV001SchemaPublicKey) validateURL(formats strfmt.Registry) error {
-	if swag.IsZero(m.URL) { // not required
-		return nil
-	}
+func (m *RpmV001SchemaPublicKey) validateContent(formats strfmt.Registry) error {
 
-	if err := validate.FormatOf("publicKey"+"."+"url", "body", "uri", m.URL.String(), formats); err != nil {
+	if err := validate.Required("publicKey"+"."+"content", "body", m.Content); err != nil {
 		return err
 	}
 

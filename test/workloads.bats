@@ -169,6 +169,10 @@ function check_conmon_fields() {
 }
 
 @test "test workload pod gets configured to defaults" {
+	if [[ $RUNTIME_TYPE == pod ]]; then
+		skip "not yet supported by conmonrs"
+	fi
+
 	shares="200"
 	set="0-1"
 	create_workload "$shares" "$set"
@@ -187,6 +191,10 @@ function check_conmon_fields() {
 }
 
 @test "test workload can override pod defaults" {
+	if [[ $RUNTIME_TYPE == pod ]]; then
+		skip "not yet supported by conmonrs"
+	fi
+
 	shares="200"
 	set="0-1"
 	name=POD
@@ -209,6 +217,10 @@ function check_conmon_fields() {
 }
 
 @test "test workload pod should not be set if not defaulted or specified" {
+	if [[ $RUNTIME_TYPE == pod ]]; then
+		skip "not yet supported by conmonrs"
+	fi
+
 	shares="200"
 	set=""
 	name=POD
@@ -252,6 +264,10 @@ function check_conmon_fields() {
 }
 
 @test "test workload pod should override infra_ctr_cpuset option" {
+	if [[ $RUNTIME_TYPE == pod ]]; then
+		skip "not yet supported by conmonrs"
+	fi
+
 	shares="200"
 	set="0-1"
 	name=POD
@@ -281,8 +297,7 @@ function check_conmon_fields() {
 	jq '.annotations."io.kubernetes.cri-o.ShmSize" = "16Mi"' \
 		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
 
-	ctrconfig="$TESTDATA"/container_sleep.json
-	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	ctr_id=$(crictl run "$TESTDATA"/container_sleep.json "$sboxconfig")
 
 	df=$(crictl exec --sync "$ctr_id" df | grep /dev/shm)
 	[[ "$df" != *'16384'* ]]
@@ -292,18 +307,17 @@ function check_conmon_fields() {
 	if test -n "$CONTAINER_UID_MAPPINGS"; then
 		skip "userNS enabled"
 	fi
+	setup_crio
 	create_workload_with_allowed_annotation "io.kubernetes.cri-o.Devices"
 	create_runtime_with_allowed_annotation "shmsize" "io.kubernetes.cri-o.ShmSize"
-
-	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio
+	CONTAINER_ALLOWED_DEVICES="/dev/null" start_crio_no_setup
 
 	jq --arg act "$activation" \
 		'   .annotations."io.kubernetes.cri-o.ShmSize" = "16Mi"
 	    |   .annotations."io.kubernetes.cri-o.Devices" = "/dev/null:/dev/peterfoo:rwm"' \
 		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
 
-	ctrconfig="$TESTDATA"/container_sleep.json
-	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	ctr_id=$(crictl run "$TESTDATA"/container_sleep.json "$sboxconfig")
 
 	df=$(crictl exec --sync "$ctr_id" df | grep /dev/shm)
 	[[ "$df" == *'16384'* ]]
@@ -322,14 +336,17 @@ function check_conmon_fields() {
 		' .annotations."io.kubernetes.cri-o.ShmSize" = "16Mi"' \
 		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
 
-	ctrconfig="$TESTDATA"/container_sleep.json
-	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	ctr_id=$(crictl run "$TESTDATA"/container_sleep.json "$sboxconfig")
 
 	df=$(crictl exec --sync "$ctr_id" df | grep /dev/shm)
 	[[ "$df" == *'16384'* ]]
 }
 
 @test "test resource cleanup on bad annotation contents" {
+	if [[ $RUNTIME_TYPE == pod ]]; then
+		skip "not yet supported by conmonrs"
+	fi
+
 	shares="200"
 	set="0-2"
 	name=helloctr
@@ -345,7 +362,6 @@ function check_conmon_fields() {
 
 	# Forceibly fail 10 container creations via bad workload annotation:
 	for id in {1..10}; do
-		ctrconfig="$TESTDIR/ctr-$id.json"
 		jq --arg act "$activation" --arg name "$name-$id" --arg set "invalid & unparsable {\"cpuset\": \"$set\"}" --arg setkey "$prefix/POD" \
 			'   .annotations[$act] = "true"
 			|   .annotations[$setkey] = $set
@@ -359,4 +375,59 @@ function check_conmon_fields() {
 	zombies=$(grep -c '^Z ' <<< "$children" || true)
 	echo "Zombies: $zombies"
 	[[ $zombies == 0 ]]
+}
+
+@test "test workload pod should not be set if annotation not specified even if prefix" {
+	start_crio
+
+	jq '   .annotations["io.kubernetes.cri-o.UnifiedCgroup.podsandbox-sleep"] = "memory.max=4294967296" |
+	  .labels["io.kubernetes.container.name"] = "podsandbox-sleep"' \
+		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
+
+	jq '   .annotations["io.kubernetes.cri-o.UnifiedCgroup.podsandbox-sleep"] = "memory.max=4294967296" |
+	  .labels["io.kubernetes.container.name"] = "podsandbox-sleep"' \
+		"$TESTDATA"/container_sleep.json > "$ctrconfig"
+
+	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	[[ $(crictl exec "$ctr_id" cat /sys/fs/cgroup/memory.max) != 4294967296 ]]
+}
+
+@test "test special runtime annotations not allowed" {
+	if [[ "$TEST_USERNS" == "1" ]]; then
+		skip "test fails in a user namespace"
+	fi
+	if [[ "$CONTAINER_CGROUP_MANAGER" == "cgroupfs" ]]; then
+		skip "need systemd cgroup manager"
+	fi
+	start_crio
+
+	jq --arg val "'inactive-or-failed'" '   .annotations["org.systemd.property.CollectMode"] = $val' \
+		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
+
+	jq --arg val "'inactive-or-failed'" '   .annotations["org.systemd.property.CollectMode"] = $val' \
+		"$TESTDATA"/container_sleep.json > "$ctrconfig"
+
+	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	[[ $(systemctl show --property CollectMode crio-"$ctr_id".scope) != "CollectMode=inactive-or-failed" ]]
+}
+
+@test "test special runtime annotations allowed" {
+	if [[ "$TEST_USERNS" == "1" ]]; then
+		skip "test fails in a user namespace"
+	fi
+	if [[ "$CONTAINER_CGROUP_MANAGER" == "cgroupfs" ]]; then
+		skip "need systemd cgroup manager"
+	fi
+	create_workload_with_allowed_annotation "org.systemd.property." "org.systemd.property.CollectMode"
+
+	start_crio
+
+	jq --arg val "'inactive-or-failed'" '   .annotations["org.systemd.property.CollectMode"] = $val' \
+		"$TESTDATA"/sandbox_config.json > "$sboxconfig"
+
+	jq --arg val "'inactive-or-failed'" '   .annotations["org.systemd.property.CollectMode"] = $val' \
+		"$TESTDATA"/container_sleep.json > "$ctrconfig"
+
+	ctr_id=$(crictl run "$ctrconfig" "$sboxconfig")
+	[[ $(systemctl show --property CollectMode crio-"$ctr_id".scope) == "CollectMode=inactive-or-failed" ]]
 }

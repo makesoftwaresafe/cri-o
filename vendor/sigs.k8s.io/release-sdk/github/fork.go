@@ -19,6 +19,7 @@ package github
 import (
 	"fmt"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/sirupsen/logrus"
 
 	"sigs.k8s.io/release-sdk/git"
@@ -26,17 +27,17 @@ import (
 
 const (
 	// UserForkName is the name we will give to the user's remote when adding
-	// it to repos
+	// it to repos.
 	UserForkName = "userfork"
 )
 
-// PrepareFork prepares a branch from a repo fork
-func PrepareFork(branchName, upstreamOrg, upstreamRepo, myOrg, myRepo string) (repo *git.Repo, err error) {
+// PrepareFork prepares a branch from a repo fork.
+func PrepareFork(branchName, upstreamOrg, upstreamRepo, myOrg, myRepo string, useSSH, updateRepo bool, opts *gogit.CloneOptions) (repo *git.Repo, err error) {
 	// checkout the upstream repository
 	logrus.Infof("Cloning/updating repository %s/%s", upstreamOrg, upstreamRepo)
 
 	repo, err = git.CleanCloneGitHubRepo(
-		upstreamOrg, upstreamRepo, false,
+		upstreamOrg, upstreamRepo, false, updateRepo, opts,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("cloning %s/%s: %w", upstreamOrg, upstreamRepo, err)
@@ -51,7 +52,7 @@ func PrepareFork(branchName, upstreamOrg, upstreamRepo, myOrg, myRepo string) (r
 		)
 	} else {
 		// add the user's fork as a remote
-		err = repo.AddRemote(UserForkName, myOrg, myRepo)
+		err = repo.AddRemote(UserForkName, myOrg, myRepo, useSSH)
 		if err != nil {
 			return nil, fmt.Errorf("adding user's fork as remote repository: %w", err)
 		}
@@ -66,9 +67,10 @@ func PrepareFork(branchName, upstreamOrg, upstreamRepo, myOrg, myRepo string) (r
 	return repo, nil
 }
 
-// VerifyFork does a pre-check of a fork to see if we can create a PR from it
+// VerifyFork does a pre-check of a fork to see if we can create a PR from it.
 func VerifyFork(branchName, forkOwner, forkRepo, parentOwner, parentRepo string) error {
 	logrus.Infof("Checking if a PR can be created from %s/%s", forkOwner, forkRepo)
+
 	gh := New()
 
 	// check if the specified repo is a fork of the parent
@@ -99,9 +101,10 @@ func VerifyFork(branchName, forkOwner, forkRepo, parentOwner, parentRepo string)
 
 	if branchExists {
 		return fmt.Errorf(
-			"a branch named %s already exists in %s/%s: %w",
-			branchName, forkOwner, forkRepo, err,
+			"a branch named %s already exists in %s/%s",
+			branchName, forkOwner, forkRepo,
 		)
 	}
+
 	return nil
 }

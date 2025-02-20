@@ -5,14 +5,14 @@ import (
 	"os"
 
 	cstorage "github.com/containers/storage"
-	"github.com/cri-o/cri-o/server"
-	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/pkg/errors"
+	"go.uber.org/mock/gomock"
+
+	"github.com/cri-o/cri-o/server"
 )
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Server", func() {
 	// Prepare the sut
 	BeforeEach(beforeEach)
@@ -33,7 +33,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).NotTo(BeNil())
 			Expect(server.StreamingServerCloseChan()).NotTo(BeNil())
 		})
@@ -46,7 +46,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).NotTo(BeNil())
 			Expect(server.StreamingServerCloseChan()).NotTo(BeNil())
 		})
@@ -61,7 +61,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).NotTo(BeNil())
 		})
 
@@ -76,23 +76,32 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).NotTo(BeNil())
 		})
 
 		It("should succeed with container restore", func() {
 			// Given
-			testError := errors.Wrap(errors.New("/dev/null"), "error")
 			gomock.InOrder(
+				cniPluginMock.EXPECT().Status().Return(nil),
 				libMock.EXPECT().GetData().Times(2).Return(serverConfig),
 				libMock.EXPECT().GetStore().Return(storeMock, nil),
 				libMock.EXPECT().GetData().Return(serverConfig),
 				storeMock.EXPECT().Containers().
 					Return([]cstorage.Container{
-						{},
-						{},
-						{},
-					}, testError),
+						{
+							ID:      "1111111111111111111111111111111111111111111111111111111111111111",
+							ImageID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+						{
+							ID:      "2222222222222222222222222222222222222222222222222222222222222222",
+							ImageID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+						{
+							ID:      "3333333333333333333333333333333333333333333333333333333333333333",
+							ImageID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+					}, nil),
 				storeMock.EXPECT().Metadata(gomock.Any()).
 					Return(`{"Pod": false, "pod-name": "name", "pod-id": "id" }`, nil),
 				storeMock.EXPECT().Metadata(gomock.Any()).
@@ -105,13 +114,16 @@ var _ = t.Describe("Server", func() {
 				storeMock.EXPECT().
 					FromContainerDirectory(gomock.Any(), gomock.Any()).
 					Return([]byte{}, nil),
+				cniPluginMock.EXPECT().GC(gomock.Any(), gomock.Len(0)).
+					Return(nil),
 			)
+			Expect(serverConfig.SetCNIPlugin(cniPluginMock)).To(Succeed())
 
 			// When
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).NotTo(BeNil())
 		})
 
@@ -121,7 +133,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), nil)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 
@@ -136,7 +148,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 
@@ -151,7 +163,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 
@@ -170,7 +182,7 @@ var _ = t.Describe("Server", func() {
 			sut, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(sut).To(BeNil())
 		},
 			Entry("cid", "w:1:1", "w:1:1"),
@@ -188,7 +200,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 
@@ -203,7 +215,7 @@ var _ = t.Describe("Server", func() {
 			server, err := server.New(context.Background(), libMock)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 		It("should fail with invalid timeout duration", func() {
@@ -211,7 +223,7 @@ var _ = t.Describe("Server", func() {
 			serverConfig.StreamIdleTimeout = "invalid duration"
 
 			server, err := server.New(context.Background(), libMock)
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(server).To(BeNil())
 		})
 		It("should succeed to set a valid timeout duration", func() {
@@ -219,7 +231,15 @@ var _ = t.Describe("Server", func() {
 			serverConfig.StreamIdleTimeout = "200ms"
 
 			server, err := server.New(context.Background(), libMock)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(server).ToNot(BeNil())
+		})
+		It("should succeed with hostport mapping disabled", func() {
+			mockNewServer()
+			serverConfig.RuntimeConfig.DisableHostPortMapping = true
+
+			server, err := server.New(context.Background(), libMock)
+			Expect(err).ToNot(HaveOccurred())
 			Expect(server).ToNot(BeNil())
 		})
 	})
@@ -257,11 +277,11 @@ var _ = t.Describe("Server", func() {
 			err := sut.Shutdown(context.Background())
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// expect cri-o to have created the clean shutdown file
 			_, err = os.Stat(sut.Config().CleanShutdownFile)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -275,7 +295,7 @@ var _ = t.Describe("Server", func() {
 			err := sut.StopStreamServer()
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })

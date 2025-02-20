@@ -33,7 +33,7 @@ import (
 
 // JarV001Schema JAR v0.0.1 Schema
 //
-// Schema for JAR entries
+// # Schema for JAR entries
 //
 // swagger:model jarV001Schema
 type JarV001Schema struct {
@@ -124,6 +124,7 @@ func (m *JarV001Schema) ContextValidate(ctx context.Context, formats strfmt.Regi
 func (m *JarV001Schema) contextValidateArchive(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Archive != nil {
+
 		if err := m.Archive.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("archive")
@@ -140,6 +141,11 @@ func (m *JarV001Schema) contextValidateArchive(ctx context.Context, formats strf
 func (m *JarV001Schema) contextValidateSignature(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Signature != nil {
+
+		if swag.IsZero(m.Signature) { // not required
+			return nil
+		}
+
 		if err := m.Signature.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("signature")
@@ -182,10 +188,6 @@ type JarV001SchemaArchive struct {
 
 	// hash
 	Hash *JarV001SchemaArchiveHash `json:"hash,omitempty"`
-
-	// Specifies the location of the archive; if this is specified, a hash value must also be provided
-	// Format: uri
-	URL strfmt.URI `json:"url,omitempty"`
 }
 
 // Validate validates this jar v001 schema archive
@@ -193,10 +195,6 @@ func (m *JarV001SchemaArchive) Validate(formats strfmt.Registry) error {
 	var res []error
 
 	if err := m.validateHash(formats); err != nil {
-		res = append(res, err)
-	}
-
-	if err := m.validateURL(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -225,18 +223,6 @@ func (m *JarV001SchemaArchive) validateHash(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *JarV001SchemaArchive) validateURL(formats strfmt.Registry) error {
-	if swag.IsZero(m.URL) { // not required
-		return nil
-	}
-
-	if err := validate.FormatOf("archive"+"."+"url", "body", "uri", m.URL.String(), formats); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // ContextValidate validate this jar v001 schema archive based on the context it is used
 func (m *JarV001SchemaArchive) ContextValidate(ctx context.Context, formats strfmt.Registry) error {
 	var res []error
@@ -254,6 +240,11 @@ func (m *JarV001SchemaArchive) ContextValidate(ctx context.Context, formats strf
 func (m *JarV001SchemaArchive) contextValidateHash(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.Hash != nil {
+
+		if swag.IsZero(m.Hash) { // not required
+			return nil
+		}
+
 		if err := m.Hash.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("archive" + "." + "hash")
@@ -292,7 +283,7 @@ type JarV001SchemaArchiveHash struct {
 
 	// The hashing function used to compute the hash value
 	// Required: true
-	// Enum: [sha256]
+	// Enum: ["sha256"]
 	Algorithm *string `json:"algorithm"`
 
 	// The hash value for the archive
@@ -483,6 +474,7 @@ func (m *JarV001SchemaSignature) contextValidateContent(ctx context.Context, for
 func (m *JarV001SchemaSignature) contextValidatePublicKey(ctx context.Context, formats strfmt.Registry) error {
 
 	if m.PublicKey != nil {
+
 		if err := m.PublicKey.ContextValidate(ctx, formats); err != nil {
 			if ve, ok := err.(*errors.Validation); ok {
 				return ve.ValidateName("signature" + "." + "publicKey")

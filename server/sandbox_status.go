@@ -1,19 +1,26 @@
 package server
 
 import (
-	"github.com/cri-o/cri-o/internal/oci"
+	"context"
+	"fmt"
+	"time"
+
 	json "github.com/json-iterator/go"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/log"
+	"github.com/cri-o/cri-o/internal/oci"
 )
 
 // PodSandboxStatus returns the Status of the PodSandbox.
 func (s *Server) PodSandboxStatus(ctx context.Context, req *types.PodSandboxStatusRequest) (*types.PodSandboxStatusResponse, error) {
-	sb, err := s.getPodSandboxFromRequest(req.PodSandboxId)
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
+
+	sb, err := s.getPodSandboxFromRequest(ctx, req.PodSandboxId)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "could not find pod %q: %v", req.PodSandboxId, err)
 	}
@@ -32,11 +39,23 @@ func (s *Server) PodSandboxStatus(ctx context.Context, req *types.PodSandboxStat
 		}
 	}
 
+	var containerStatuses []*types.ContainerStatus
+
+	var timestamp int64
+	if s.config.EnablePodEvents {
+		timestamp = time.Now().UnixNano()
+
+		containerStatuses, err = s.getContainerStatusesFromSandboxID(ctx, req.PodSandboxId)
+		if err != nil {
+			return nil, status.Errorf(codes.Unknown, "could not get container statuses of the sandbox Id %q: %v", req.PodSandboxId, err)
+		}
+	}
+
 	sandboxID := sb.ID()
 	resp := &types.PodSandboxStatusResponse{
 		Status: &types.PodSandboxStatus{
 			Id:          sandboxID,
-			CreatedAt:   sb.CreatedAt(),
+			CreatedAt:   sb.CreatedAt().UnixNano(),
 			Network:     &types.PodSandboxNetworkStatus{},
 			State:       rStatus,
 			Labels:      sb.Labels(),
@@ -44,11 +63,14 @@ func (s *Server) PodSandboxStatus(ctx context.Context, req *types.PodSandboxStat
 			Metadata:    sb.Metadata(),
 			Linux:       linux,
 		},
+		ContainersStatuses: containerStatuses,
+		Timestamp:          timestamp,
 	}
 
 	if len(sb.IPs()) > 0 {
 		resp.Status.Network.Ip = sb.IPs()[0]
 	}
+
 	if len(sb.IPs()) > 1 {
 		resp.Status.Network.AdditionalIps = toPodIPs(sb.IPs()[1:])
 	}
@@ -56,8 +78,9 @@ func (s *Server) PodSandboxStatus(ctx context.Context, req *types.PodSandboxStat
 	if req.Verbose {
 		info, err := createSandboxInfo(sb.InfraContainer())
 		if err != nil {
-			return nil, errors.Wrap(err, "creating sandbox info")
+			return nil, fmt.Errorf("creating sandbox info: %w", err)
 		}
+
 		resp.Info = info
 	}
 
@@ -68,11 +91,12 @@ func toPodIPs(ips []string) (result []*types.PodIP) {
 	for _, ip := range ips {
 		result = append(result, &types.PodIP{Ip: ip})
 	}
+
 	return result
 }
 
 func createSandboxInfo(c *oci.Container) (map[string]string, error) {
-	var info interface{}
+	var info any
 	if c.Spoofed() {
 		info = struct {
 			RuntimeSpec spec.Spec `json:"runtimeSpec,omitempty"`
@@ -85,14 +109,16 @@ func createSandboxInfo(c *oci.Container) (map[string]string, error) {
 			Pid         int       `json:"pid"`
 			RuntimeSpec spec.Spec `json:"runtimeSpec,omitempty"`
 		}{
-			c.Image(),
+			c.UserRequestedImage(),
 			c.State().Pid,
 			c.Spec(),
 		}
 	}
+
 	bytes, err := json.Marshal(info)
 	if err != nil {
-		return nil, errors.Wrapf(err, "marshal data: %v", info)
+		return nil, fmt.Errorf("marshal data: %v: %w", info, err)
 	}
+
 	return map[string]string{"info": string(bytes)}, nil
 }

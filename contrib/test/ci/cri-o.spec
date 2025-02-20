@@ -11,13 +11,7 @@
 %global debug_package %{nil}
 %endif
 
-%if ! 0%{?centos} && 0%{?rhel}
-# Golang minor version
-%global gominver 18
-%define gobuild(o:) scl enable go-toolset-1.%{gominver} -- go build -buildmode pie -compiler gc -tags="rpm_crashtraceback no_openssl ${BUILDTAGS:-}" -ldflags "${LDFLAGS:-} -B 0x$(head -c20 /dev/urandom|od -An -tx1|tr -d ' \\n') -extldflags '%__global_ldflags'" -a -v -x %{?**};
-%else
 %define gobuild(o:) go build -buildmode pie -compiler gc -tags="rpm_crashtraceback no_openssl ${BUILDTAGS:-}" -ldflags "${LDFLAGS:-} -B 0x$(head -c20 /dev/urandom|od -An -tx1|tr -d ' \\n') -extldflags '%__global_ldflags'" -a -v -x %{?**};
-%endif
 
 %global provider github
 %global provider_tld com
@@ -32,18 +26,14 @@
 %global service_name crio
 
 Name: %{repo}
-Version: 1.24.0
+Version: 1.32.0
 Release: 1.ci%{?dist}
 Summary: Kubernetes Container Runtime Interface for OCI-based containers
 License: ASL 2.0
 URL: %{git0}
 Source0: %{name}-test.tar.gz
-%if ! 0%{?centos} && 0%{?rhel}
-BuildRequires: go-toolset-1.%{gominver}
-%else
 # Assume pre-installed golang (which is the case in our CI)
 BuildRequires: make
-%endif
 BuildRequires: git
 BuildRequires: glib2-devel
 BuildRequires: glibc-static
@@ -84,8 +74,8 @@ popd
 
 ln -s vendor src
 export GOPATH=$(pwd)/_output:$(pwd)
-export BUILDTAGS="selinux seccomp exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_ostree_stub containers_image_openpgp"
-make bin/crio bin/crio-status bin/pinns
+export BUILDTAGS="selinux seccomp exclude_graphdriver_btrfs containers_image_ostree_stub containers_image_openpgp"
+make bin/crio bin/pinns
 
 # build docs
 make GO_MD2MAN=go-md2man docs
@@ -104,8 +94,8 @@ make GO_MD2MAN=go-md2man docs
 install -dp %{buildroot}%{_sysconfdir}/cni/net.d
 mkdir -p %{buildroot}%{_sysconfdir}/%{service_name}
 install -p -m 644 ./%{service_name}.conf %{buildroot}%{_sysconfdir}/%{service_name}/%{service_name}.conf
-install -p -m 644 contrib/cni/10-crio-bridge.conf %{buildroot}%{_sysconfdir}/cni/net.d/100-crio-bridge.conf
-install -p -m 644 contrib/cni/99-loopback.conf %{buildroot}%{_sysconfdir}/cni/net.d/200-loopback.conf
+install -p -m 644 contrib/cni/10-crio-bridge.conflist %{buildroot}%{_sysconfdir}/cni/net.d/100-crio-bridge.conf
+install -p -m 644 contrib/cni/99-loopback.conflist %{buildroot}%{_sysconfdir}/cni/net.d/200-loopback.conf
 
 make PREFIX=%{buildroot}%{_usr} DESTDIR=%{buildroot} \
             install.bin \
@@ -141,7 +131,6 @@ rm -f %{_unitdir}/%{repo}.service
 %license LICENSE
 %doc README.md
 %{_bindir}/%{service_name}
-%{_bindir}/%{service_name}-status
 %{_bindir}/pinns
 %{_mandir}/man5/%{service_name}.conf.5*
 %{_mandir}/man5/%{service_name}.conf.d.5*
@@ -157,11 +146,8 @@ rm -f %{_unitdir}/%{repo}.service
 %dir %{_datadir}/oci-umount/oci-umount.d
 %{_datadir}/oci-umount/oci-umount.d/%{service_name}-umount.conf
 %{_unitdir}/%{service_name}-wipe.service
-%{_datadir}/bash-completion/completions/%{service_name}-status
 %{_datadir}/bash-completion/completions/%{service_name}
-%{_datadir}/fish/completions/%{service_name}-status.fish
 %{_datadir}/fish/completions/%{service_name}.fish
-%{_datadir}/zsh/site-functions/_%{service_name}-status
 %{_datadir}/zsh/site-functions/_%{service_name}
 
 

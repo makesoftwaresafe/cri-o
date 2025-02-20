@@ -5,6 +5,8 @@ set -euo pipefail
 # shellcheck source=versions
 source "$(dirname "${BASH_SOURCE[0]}")"/versions
 
+GOARCH=$(go env GOARCH)
+
 main() {
     set -x
     prepare_system
@@ -13,15 +15,30 @@ main() {
     install_conmon
     install_conmonrs
     install_critools
+    install_crun
     install_runc
     install_ginkgo
     install_cni_plugins
     install_files
+    install_buildah
+}
+
+curl_retry() {
+    sudo curl -sSfL --retry 5 --retry-delay 3 "$@"
 }
 
 prepare_system() {
-    sudo systemctl stop docker
-    sudo ufw disable
+    sudo systemctl stop docker || true
+    sudo ufw disable || true
+
+    if [[ "$GOARCH" == amd64 ]]; then
+        # Setup swap for integration tests
+        sudo fallocate -l 1G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+    fi
+    sudo swapon --show
 
     # enable necessary kernel modules
     sudo ip6tables --list >/dev/null
@@ -39,49 +56,62 @@ prepare_system() {
     if ! grep -q containers /etc/subgid; then
         echo "containers:100000:65536" | sudo tee -a /etc/subgid
     fi
+
+    printf "RateLimitInterval=0\nRateLimitBurst=0\n" | sudo tee /etc/systemd/journald.conf
+    sudo systemctl restart systemd-journald
+}
+
+install_from_github_org_repo() {
+    URL=https://github.com/$1/$2
+    DIR=$(mktemp -ud)
+
+    git clone "$URL" "$DIR"
+    pushd "$DIR"
+    git checkout "$3"
+    "${@:4}"
+    popd
+    sudo rm -rf "$DIR"
 }
 
 install_bats() {
-    git clone https://github.com/bats-core/bats-core
-    pushd bats-core
-    git checkout "${VERSIONS["bats"]}"
-    sudo ./install.sh /usr/local
-    popd
-    rm -rf bats-core
+    install_from_github_org_repo \
+        bats-core \
+        bats-core \
+        "${VERSIONS["bats"]}" \
+        sudo ./install.sh /usr/local
+
     mkdir -p ~/.parallel
     touch ~/.parallel/will-cite
+
+    bats --version
 }
 
 install_conmon() {
-    git clone https://github.com/containers/conmon
-    pushd conmon
-    git checkout "${VERSIONS["conmon"]}"
-    sudo make PREFIX=/ all install
-    popd
-    sudo rm -rf conmon
+    CONMON_BINARY=/usr/local/bin/conmon
+    curl_retry "https://github.com/containers/conmon/releases/download/${VERSIONS["conmon"]}/conmon.$GOARCH" \
+        -o $CONMON_BINARY
+    sudo chmod +x $CONMON_BINARY
 }
 
 install_conmonrs() {
-    curl https://raw.githubusercontent.com/containers/conmon-rs/main/scripts/get |
-        sudo bash -s -- -o /usr/bin/conmonrs
+    curl_retry https://raw.githubusercontent.com/containers/conmon-rs/main/scripts/get |
+        sudo -E PATH="$PATH" bash -s -- -a "$GOARCH" -o /usr/bin/conmonrs
 }
 
 install_critools() {
-    URL=https://github.com/kubernetes-sigs/cri-tools
+    install_from_github_org_repo \
+        kubernetes-sigs \
+        cri-tools \
+        master \
+        sudo -E PATH="$PATH" make BINDIR=/usr/bin install
 
-    git clone $URL
-    pushd cri-tools
-    git checkout "${VERSIONS["cri-tools"]}"
-    sudo -E PATH="$PATH" make BINDIR=/usr/bin install
-    popd
-    sudo rm -rf cri-tools
     sudo critest --version
     sudo crictl --version
 }
 
 install_cni_plugins() {
     URL=https://github.com/containernetworking/plugins/releases/download
-    TARBALL=cni-plugins-linux-amd64-${VERSIONS["cni-plugins"]}.tgz
+    TARBALL="cni-plugins-linux-$GOARCH-${VERSIONS["cni-plugins"]}.tgz"
     CNI_DIR=/opt/cni/bin
     sudo mkdir -p "$CNI_DIR"
     wget -O "$TARBALL" $URL/"${VERSIONS["cni-plugins"]}"/"$TARBALL"
@@ -90,26 +120,35 @@ install_cni_plugins() {
     ls -lah "$CNI_DIR"
 }
 
+install_crun() {
+    git clone https://github.com/containers/crun
+    pushd crun
+    ./autogen.sh
+    ./configure
+    sudo make -j "$(nproc)" install prefix=/usr
+    popd
+    sudo rm -rf crun
+    crun --version
+}
+
 install_runc() {
-    URL=https://github.com/opencontainers/runc/releases/download/"${VERSIONS["runc"]}"
-    BINARY=/usr/sbin/runc
-    sudo wget -O "$BINARY" "$URL"/runc.amd64
-    sudo chmod +x "$BINARY"
-
-    # Verify the SHA256
-    SUMFILE=runc.sha256sum
-    wget "$URL"/$SUMFILE
-    grep -qw "$(sha256sum "$BINARY" | awk '{ print $1 }')" $SUMFILE
-    rm $SUMFILE
-
+    git clone https://github.com/opencontainers/runc
+    pushd runc
+    git checkout "${VERSIONS["runc"]}"
+    make
+    sudo install -D -m0755 runc /usr/sbin/runc
+    popd
+    rm -rf runc
     runc --version
 }
 
 install_ginkgo() {
     GOPATH="$(go env GOPATH)"
-    sudo chown -R "$(id -u):$(id -g)" "$GOPATH"
-    go install github.com/onsi/ginkgo/ginkgo@latest
-    sudo -E cp "$GOPATH/bin//ginkgo" /usr/bin
+    for i in $GOPATH "$(go env GOCACHE)"; do
+        sudo chown -R "$(id -u):$(id -g)" "$i"
+    done
+    go install github.com/onsi/ginkgo/v2/ginkgo@latest
+    sudo -E cp "$GOPATH/bin/ginkgo" /usr/bin
     ginkgo version
 }
 
@@ -119,9 +158,23 @@ install_files() {
     sudo cp "$REPO_ROOT"/test/policy.json /etc/containers
     sudo cp "$REPO_ROOT"/test/redhat_sigstore.yaml \
         /etc/containers/registries.d/registry.access.redhat.com.yaml
+    sudo cp "$REPO_ROOT"/test/default.yaml /etc/containers/registries.d/default.yaml
     sudo cp "$REPO_ROOT"/test/registries.conf /etc/containers/registries.conf
     sudo rm -rf /usr/share/containers/containers.conf
     sudo rm -rf /etc/containers/storage.conf
+}
+
+install_buildah() {
+    URL=https://github.com/containers/buildah.git
+
+    git clone $URL
+    pushd buildah
+    git checkout "${VERSIONS["buildah"]}"
+    make bin/buildah
+    sudo install -m 755 bin/buildah /usr/bin/buildah
+    popd
+    sudo rm -rf buildah
+    sudo buildah --version
 }
 
 main "$@"

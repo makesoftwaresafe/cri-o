@@ -17,73 +17,39 @@ limitations under the License.
 package hostport
 
 import (
-	"fmt"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
+
+	utiliptables "github.com/cri-o/cri-o/internal/iptables"
 )
-
-type fakeSocket struct {
-	closed   bool
-	port     int32
-	protocol string
-	ip       string
-}
-
-func (f *fakeSocket) Close() error {
-	if f.closed {
-		return fmt.Errorf("socket %q.%s already closed", f.port, f.protocol)
-	}
-	f.closed = true
-	return nil
-}
-
-func newFakeSocketManager() *fakeSocketManager {
-	return &fakeSocketManager{mem: make(map[hostport]*fakeSocket)}
-}
-
-type fakeSocketManager struct {
-	mem map[hostport]*fakeSocket
-}
-
-func (f *fakeSocketManager) openFakeSocket(hp *hostport) (closeable, error) {
-	if socket, ok := f.mem[*hp]; ok && !socket.closed {
-		return nil, fmt.Errorf("hostport is occupied")
-	}
-	fs := &fakeSocket{
-		port:     hp.port,
-		protocol: hp.protocol,
-		closed:   false,
-		ip:       hp.ip,
-	}
-	f.mem[*hp] = fs
-	return fs, nil
-}
 
 var _ = t.Describe("HostPort", func() {
 	It("should ensure kube hostport chains", func() {
-		interfaceName := "cbr0"
-		builtinChains := []string{"PREROUTING", "OUTPUT"}
-		jumpRule := "-m comment --comment \"kube hostport portals\" -m addrtype --dst-type LOCAL -j KUBE-HOSTPORTS"
-		masqRule := "-m comment --comment \"SNAT for localhost access to hostports\" -o cbr0 -s 127.0.0.0/8 -j MASQUERADE"
-
 		fakeIPTables := newFakeIPTables()
-		Expect(ensureKubeHostportChains(fakeIPTables, interfaceName)).To(BeNil())
+		Expect(ensureKubeHostportChains(fakeIPTables)).To(Succeed())
 
 		_, _, err := fakeIPTables.getChain(utiliptables.TableNAT, utiliptables.Chain("KUBE-HOSTPORTS"))
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 
-		_, chain, err := fakeIPTables.getChain(utiliptables.TableNAT, utiliptables.ChainPostrouting)
-		Expect(err).To(BeNil())
-		Expect(len(chain.rules)).To(BeEquivalentTo(1))
-		Expect(chain.rules).To(ContainElement(masqRule))
+		builtinChains := []string{"PREROUTING", "OUTPUT"}
+		hostPortJumpRule := "-m comment --comment \"kube hostport portals\" -m addrtype --dst-type LOCAL -j KUBE-HOSTPORTS"
 
 		for _, chainName := range builtinChains {
 			_, chain, err := fakeIPTables.getChain(utiliptables.TableNAT, utiliptables.Chain(chainName))
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(len(chain.rules)).To(BeEquivalentTo(1))
-			Expect(chain.rules).To(ContainElement(jumpRule))
+			Expect(chain.rules).To(ContainElement(hostPortJumpRule))
 		}
+
+		masqJumpRule := "-m comment --comment \"kube hostport masquerading\" -m conntrack --ctstate DNAT -j CRIO-HOSTPORTS-MASQ"
+
+		_, chain, err := fakeIPTables.getChain(utiliptables.TableNAT, utiliptables.ChainPostrouting)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(len(chain.rules)).To(BeEquivalentTo(1))
+		Expect(chain.rules).To(ContainElement(masqJumpRule))
+
+		_, chain, err = fakeIPTables.getChain(utiliptables.TableNAT, crioMasqueradeChain)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(len(chain.rules)).To(BeEquivalentTo(0))
 	})
 })

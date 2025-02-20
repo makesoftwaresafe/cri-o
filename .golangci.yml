@@ -9,215 +9,144 @@ run:
     - test
     # needs btrfs headers installed
     - exclude_graphdriver_btrfs
-    # needs devmapper headers installed
-    - exclude_graphdriver_devicemapper
-    # remove this tag when golangci lint supports go 1.18 and generics                                                                                                   │noctx: noctx finds sending http request without context.Context [fast: false, auto-fix: false]
-    - skip_pod_runtime
   concurrency: 6
-  deadline: 5m
+  timeout: 10m
 linters:
   disable-all: true
   enable:
+    - asasalint
     - asciicheck
     - bidichk
     - bodyclose
-    - deadcode
+    - canonicalheader
+    - copyloopvar
     - decorder
-    - depguard
     - dogsled
     - dupl
+    - dupword
     - durationcheck
     - errcheck
     - errchkjson
-    - exportloopref
+    - errorlint
+    - exptostd
+    - fatcontext
     - forcetypeassert
+    - gci
+    - ginkgolinter
+    - gocheckcompilerdirectives
     - gochecknoinits
+    - gochecksumtype
     - goconst
     - gocritic
     - gocyclo
+    - godot
     - gofmt
     - gofumpt
     - goheader
     - goimports
+    - gomoddirectives
+    - gomodguard
     - goprintffuncname
     - gosimple
+    - gosmopolitan
     - govet
     - grouper
+    - iface
     - importas
     - ineffassign
+    - intrange
+    - loggercheck
     - makezero
+    - mirror
     - misspell
+    - musttag
     - nakedret
+    - nilnesserr
+    - nlreturn
+    - noctx
     - nolintlint
+    - nosprintfhostport
+    - perfsprint
     - prealloc
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
     - rowserrcheck
+    - sloglint
+    - spancheck
     - sqlclosecheck
     - staticcheck
-    - structcheck
     - stylecheck
+    - tagalign
     - tenv
+    - testableexamples
+    - testifylint
     - tparallel
     - typecheck
     - unconvert
     - unparam
     - unused
-    - varcheck
+    - usestdlibvars
+    - usetesting
+    - wastedassign
     - whitespace
+    - wsl
+    - zerologlint
     # - containedctx
     # - contextcheck
     # - cyclop
+    # - depguard
+    # - err113
     # - errname
-    # - errorlint
     # - exhaustive
-    # - exhaustivestruct
+    # - exhaustruct
     # - forbidigo
     # - funlen
-    # - gci
     # - gochecknoglobals
     # - gocognit
-    # - godot
     # - godox
-    # - goerr113
-    # - gomnd
-    # - gomoddirectives
-    # - gomodguard
     # - gosec
-    # - ifshort
+    # - inamedparam
+    # - interfacebloat
     # - ireturn
     # - lll
     # - maintidx
+    # - mnd
     # - nestif
     # - nilerr
     # - nilnil
-    # - nlreturn
-    # - noctx
+    # - nonamedreturns
     # - paralleltest
     # - predeclared
-    # - promlinter
-    # - revive
     # - tagliatelle
     # - testpackage
     # - thelper
     # - varnamelen
-    # - wastedassign
     # - wrapcheck
-    # - wsl
 linters-settings:
+  gci:
+    sections:
+      - standard
+      - default
+      - localmodule
   errcheck:
     check-type-assertions: true
     check-blank: true
+  revive:
+    rules:
+      - name: argument-limit
+        disabled: false
+        arguments: [22]
   gocritic:
-    enabled-checks:
-      # Diagnostic
-      - appendAssign
-      - argOrder
-      - badCall
-      - badCond
-      - badLock
-      - badRegexp
-      - badSorting
-      - builtinShadowDecl
-      - caseOrder
-      - codegenComment
-      - commentedOutCode
-      - deferInLoop
-      - deprecatedComment
-      - dupArg
-      - dupBranchBody
-      - dupCase
-      - dupSubExpr
-      - dynamicFmtString
-      - emptyDecl
-      - evalOrder
-      - exitAfterDefer
-      - externalErrorReassign
-      - flagDeref
-      - flagName
-      - mapKey
-      - nilValReturn
-      - offBy1
-      - regexpPattern
-      - returnAfterHttpError
-      - sloppyReassign
-      - sloppyTypeAssert
-      - sortSlice
-      - sprintfQuotedString
-      - sqlQuery
-      - syncMapLoadAndDelete
-      - truncateCmp
-      - unnecessaryDefer
-      - weakCond
-      # - filepathJoin
-
-      # Performance
-      - appendCombine
-      - equalFold
-      - hugeParam
-      - indexAlloc
-      - preferDecodeRune
-      - preferFprint
-      - preferStringWriter
-      - preferWriteByte
-      - rangeExprCopy
-      - rangeValCopy
-      - sliceClear
-      - stringXbytes
-
-      # Style
-      - assignOp
-      - boolExprSimplify
-      - captLocal
-      - commentFormatting
-      - commentedOutImport
-      - defaultCaseOrder
-      - deferUnlambda
-      - docStub
-      - dupImport
-      - elseif
-      - emptyFallthrough
-      - emptyStringTest
-      - exposedSyncMutex
-      - hexLiteral
-      - httpNoBody
-      - ifElseChain
-      - methodExprCall
-      - newDeref
-      - octalLiteral
-      - preferFilepathJoin
-      - redundantSprint
-      - regexpMust
-      - regexpSimplify
-      - ruleguard
-      - singleCaseSwitch
-      - sloppyLen
-      - stringConcatSimplify
-      - switchTrue
-      - timeExprSimplify
-      - tooManyResultsChecker
-      - typeAssertChain
-      - typeDefFirst
-      - typeSwitchVar
-      - underef
-      - unlabelStmt
-      - unlambda
-      - unslice
-      - valSwap
-      - wrapperFunc
-      - yodaStyleExpr
-      - ioutilDeprecated
-      # - whyNoLint
-
-      # Opinionated
-      - builtinShadow
-      - importShadow
-      - initClause
-      - nestingReduce
-      - paramTypeCombine
-      - ptrToRefParam
-      - typeUnparen
-      - unnamedResult
-      - unnecessaryBlock
+    enable-all: true
+    disabled-checks:
+      - filepathJoin
+      - whyNoLint
   gocyclo:
-    min-complexity: 141
+    min-complexity: 177
   nakedret:
     max-func-lines: 15
+  goconst:
+    min-occurrences: 6

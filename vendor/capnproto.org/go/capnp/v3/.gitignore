@@ -4,6 +4,14 @@ TAGS
 *~
 *.swp
 
+# Common extensions for coverage/profling outputs:
+*.out
+*.cpu
+*.mem
+
+# Test executables:
+*.test
+
 # Bazel
 /bazel-bin
 /bazel-capnproto2

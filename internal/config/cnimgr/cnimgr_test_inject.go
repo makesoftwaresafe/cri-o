@@ -1,5 +1,4 @@
 //go:build test
-// +build test
 
 // All *_inject.go files are meant to be used by tests only. Purpose of this
 // files is to provide a way to inject mocked data into the current setup.
@@ -18,9 +17,11 @@ func (c *CNIManager) SetCNIPlugin(plugin ocicni.CNIPlugin) error {
 			return err
 		}
 	}
+
 	c.plugin = plugin
 	// initialize the poll, but don't run it continuously (or else the mocks will get weird)
 	//nolint:errcheck
 	_, _ = c.pollFunc()
+
 	return nil
 }

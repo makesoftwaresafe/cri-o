@@ -1,20 +1,27 @@
+//go:build seccomp && linux && cgo
+
 package seccomp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
+	"slices"
 	"sync"
 
 	"github.com/containers/common/pkg/seccomp"
-	"github.com/cri-o/cri-o/internal/log"
+	imagetypes "github.com/containers/image/v5/types"
 	json "github.com/json-iterator/go"
 	"github.com/opencontainers/runtime-tools/generate"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	k8sV1 "k8s.io/api/core/v1"
+	"golang.org/x/sys/unix"
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
+
+	"github.com/cri-o/cri-o/internal/config/seccomp/seccompociartifact"
+	"github.com/cri-o/cri-o/internal/log"
 )
 
 var (
@@ -23,38 +30,112 @@ var (
 )
 
 // DefaultProfile is used to allow mutations from the DefaultProfile from the seccomp library.
-// Specifically, it is used to filter `unshare` from the default profile, as it is a risky syscall for unprivileged containers
-// to have access to.
+// Specifically, it is used to filter syscalls which can create namespaces from the default
+// profile, as it is risky for unprivileged containers to have access to create Linux
+// namespaces.
 func DefaultProfile() *seccomp.Seccomp {
 	defaultProfileOnce.Do(func() {
-		const (
-			unshareName              = "unshare"
-			unshareParentStructIndex = 1
-			unshareIndex             = 360
-		)
-		prof := seccomp.DefaultProfile()
-		// We know the default profile at compile time
-		// though a vendor change may update it.
-		// Panic on error and have CI catch errors on vendor bumps,
-		// to avoid combing through.
-		if prof.Syscalls[unshareParentStructIndex].Names[unshareIndex] != unshareName {
-			panic("Default seccomp profile updated and unshare syscall moved. Found unexpected syscall: " + prof.Syscalls[unshareParentStructIndex].Names[unshareIndex])
+		removeSyscalls := []struct {
+			Name              string
+			ParentStructIndex int
+			Index             int
+		}{
+			{"clone", 1, 23},
+			{"clone3", 1, 24},
+			{"unshare", 1, 358},
 		}
-		removeStringFromSlice(prof.Syscalls[unshareParentStructIndex].Names, unshareIndex)
+
+		prof := seccomp.DefaultProfile()
+		for _, remove := range removeSyscalls {
+			validateSyscallIndex(prof, remove.Name, remove.ParentStructIndex, remove.Index)
+			removeStringFromSlice(prof.Syscalls[remove.ParentStructIndex].Names, remove.Index)
+		}
 
 		prof.Syscalls = append(prof.Syscalls, &seccomp.Syscall{
 			Names: []string{
-				unshareName,
+				"clone",
+				"clone3",
+				"unshare",
 			},
 			Action: seccomp.ActAllow,
 			Includes: seccomp.Filter{
 				Caps: []string{"CAP_SYS_ADMIN"},
 			},
 		})
+
+		var flagsIndex uint = 0
+		if runtime.GOARCH == "s390" || runtime.GOARCH == "s390x" {
+			flagsIndex = 1
+		}
+
+		prof.Syscalls = append(prof.Syscalls,
+			&seccomp.Syscall{
+				Name:   "clone",
+				Action: seccomp.ActAllow,
+				Args: []*seccomp.Arg{
+					{
+						Index:    flagsIndex,
+						Value:    unix.CLONE_NEWNS | unix.CLONE_NEWUTS | unix.CLONE_NEWIPC | unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWNET | unix.CLONE_NEWCGROUP,
+						ValueTwo: 0,
+						Op:       seccomp.OpMaskedEqual,
+					},
+				},
+			},
+			&seccomp.Syscall{
+				Name:   "clone",
+				Action: seccomp.ActErrno,
+				Errno:  "EPERM",
+				Args: []*seccomp.Arg{
+					{Index: flagsIndex, Value: unix.CLONE_NEWNS, ValueTwo: unix.CLONE_NEWNS, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWUTS, ValueTwo: unix.CLONE_NEWUTS, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWIPC, ValueTwo: unix.CLONE_NEWIPC, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWUSER, ValueTwo: unix.CLONE_NEWUSER, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWPID, ValueTwo: unix.CLONE_NEWPID, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWNET, ValueTwo: unix.CLONE_NEWNET, Op: seccomp.OpMaskedEqual},
+					{Index: flagsIndex, Value: unix.CLONE_NEWCGROUP, ValueTwo: unix.CLONE_NEWCGROUP, Op: seccomp.OpMaskedEqual},
+				},
+				Excludes: seccomp.Filter{
+					Caps: []string{"CAP_SYS_ADMIN"},
+				},
+			},
+			// Because seccomp currently can't compare the data inside struct and the flags in clone3 are hidden in a struct,
+			// seccomp can't block clone3 based on its flags. To force it to use only clone, we make clone3 return ENOSYS,
+			// so that glibc can fall back to clone in the same way as https://github.com/moby/moby/pull/42681.
+			&seccomp.Syscall{
+				Name:   "clone3",
+				Action: seccomp.ActErrno,
+				Errno:  "ENOSYS",
+				Excludes: seccomp.Filter{
+					Caps: []string{"CAP_SYS_ADMIN"},
+				},
+			})
 		defaultProfile = prof
 	})
 
 	return defaultProfile
+}
+
+// validateSyscallIndex checks if the syscall's index matches the default profile's index.
+// We know the default profile at compile time, though a vendor change may update it.
+// Panic on error and have CI catch errors on vendor bumps to avoid combing through.
+func validateSyscallIndex(prof *seccomp.Seccomp, name string, parentStructIndex, index int) {
+	if prof.Syscalls[parentStructIndex].Names[index] == name {
+		return
+	}
+
+	var msg string
+	i := slices.Index(prof.Syscalls[parentStructIndex].Names, name)
+	if i == -1 {
+		msg = fmt.Sprintf("Change the ParentStructIndex for %q", name)
+	} else {
+		msg = fmt.Sprintf("Change the Index for %q to %d", name, i)
+	}
+	logrus.Fatalf(
+		`The default internal seccomp policy has been changed, and CRI-O can't adjust some risky syscalls.
+You are likely seeing this error because "github.com/containers/common/pkg/seccomp" was updated.
+Please contact the developers or change "DefaultProfile()" in "internal/config/seccomp/seccomp.go"
+to match the updated policy as per the following hint: %s`, msg,
+	)
 }
 
 func removeStringFromSlice(s []string, i int) []string {
@@ -62,33 +143,30 @@ func removeStringFromSlice(s []string, i int) []string {
 	return s[:len(s)-1]
 }
 
-// Config is the global seccomp configuration type
+// Config is the global seccomp configuration type.
 type Config struct {
-	enabled          bool
-	defaultWhenEmpty bool
-	profile          *seccomp.Seccomp
+	enabled      bool
+	profile      *seccomp.Seccomp
+	notifierPath string
 }
 
-// New creates a new default seccomp configuration instance
+// New creates a new default seccomp configuration instance.
 func New() *Config {
 	return &Config{
-		enabled:          seccomp.IsEnabled(),
-		profile:          DefaultProfile(),
-		defaultWhenEmpty: true,
+		enabled:      seccomp.IsEnabled(),
+		profile:      DefaultProfile(),
+		notifierPath: "/var/run/crio/seccomp",
 	}
 }
 
-// SetUseDefaultWhenEmpty uses the default seccomp profile if true is passed as
-// argument, otherwise unconfined.
-func (c *Config) SetUseDefaultWhenEmpty(to bool) {
-	logrus.Infof("Using seccomp default profile when unspecified: %v", to)
-	c.defaultWhenEmpty = to
+// SetNotifierPath sets the default path for creating seccomp notifier sockets.
+func (c *Config) SetNotifierPath(path string) {
+	c.notifierPath = path
 }
 
-// Returns whether the seccomp config is set to
-// use default profile when the profile is empty
-func (c *Config) UseDefaultWhenEmpty() bool {
-	return c.defaultWhenEmpty
+// NotifierPath returns the currently used seccomp notifier base path.
+func (c *Config) NotifierPath() string {
+	return c.notifierPath
 }
 
 // LoadProfile can be used to load a seccomp profile from the provided path.
@@ -100,32 +178,41 @@ func (c *Config) LoadProfile(profilePath string) error {
 	}
 
 	if profilePath == "" {
-		c.profile = DefaultProfile()
-		logrus.Info("No seccomp profile specified, using the internal default")
-
-		if logrus.IsLevelEnabled(logrus.TraceLevel) {
-			profileString, err := json.MarshalToString(c.profile)
-			if err != nil {
-				return errors.Wrap(err, "marshal default seccomp profile to string")
-			}
-			logrus.Tracef("Current seccomp profile content: %s", profileString)
+		if err := c.LoadDefaultProfile(); err != nil {
+			return fmt.Errorf("load default seccomp profile: %w", err)
 		}
 		return nil
 	}
 
 	profile, err := os.ReadFile(profilePath)
 	if err != nil {
-		return errors.Wrap(err, "open seccomp profile")
+		return fmt.Errorf("open seccomp profile: %w", err)
 	}
 
 	tmpProfile := &seccomp.Seccomp{}
 	if err := json.Unmarshal(profile, tmpProfile); err != nil {
-		return errors.Wrap(err, "decoding seccomp profile failed")
+		return fmt.Errorf("decoding seccomp profile failed: %w", err)
 	}
 
 	c.profile = tmpProfile
 	logrus.Infof("Successfully loaded seccomp profile %q", profilePath)
 	logrus.Tracef("Current seccomp profile content: %s", profile)
+	return nil
+}
+
+// LoadDefaultProfile sets the internal default profile.
+func (c *Config) LoadDefaultProfile() error {
+	logrus.Info("Using the internal default seccomp profile")
+	c.profile = DefaultProfile()
+
+	if logrus.IsLevelEnabled(logrus.TraceLevel) {
+		profileString, err := json.MarshalToString(c.profile)
+		if err != nil {
+			return fmt.Errorf("marshal default seccomp profile to string: %w", err)
+		}
+		logrus.Tracef("Default seccomp profile content: %s", profileString)
+	}
+
 	return nil
 }
 
@@ -135,7 +222,7 @@ func (c *Config) IsDisabled() bool {
 	return !c.enabled
 }
 
-// Profile returns the currently loaded seccomp profile
+// Profile returns the currently loaded seccomp profile.
 func (c *Config) Profile() *seccomp.Seccomp {
 	return c.profile
 }
@@ -143,122 +230,59 @@ func (c *Config) Profile() *seccomp.Seccomp {
 // Setup can be used to setup the seccomp profile.
 func (c *Config) Setup(
 	ctx context.Context,
+	sys *imagetypes.SystemContext,
+	msgChan chan Notification,
+	containerID, containerName string,
+	sandboxAnnotations, imageAnnotations map[string]string,
 	specGenerator *generate.Generator,
 	profileField *types.SecurityProfile,
-	profilePath string,
-) error {
-	if profileField == nil {
-		// Path based seccomp profiles will be used with a higher priority and are
-		// going to be removed in future Kubernetes versions.
-		if err := c.setupFromPath(ctx, specGenerator, profilePath); err != nil {
-			return errors.Wrap(err, "from profile path")
-		}
-	} else if err := c.setupFromField(ctx, specGenerator, profileField); err != nil {
-		// Field based seccomp profiles are newer than the path based ones and will
-		// be the standard in future Kubernetes versions.
-		return errors.Wrap(err, "from field")
-	}
-
-	return nil
-}
-
-func (c *Config) setupFromPath(
-	ctx context.Context, specGenerator *generate.Generator, profilePath string,
-) error {
-	log.Debugf(ctx, "Setup seccomp from profile path: %s", profilePath)
-
-	if profilePath == "" {
-		if !c.UseDefaultWhenEmpty() {
-			// running w/o seccomp, aka unconfined
-			specGenerator.Config.Linux.Seccomp = nil
-			return nil
-		}
-		// default to SeccompProfileRuntimeDefault if user sets UseDefaultWhenEmpty
-		profilePath = k8sV1.SeccompProfileRuntimeDefault
-	}
-
-	// kubelet defaults sandboxes to run as `runtime/default`, we consider the
-	// default profilePath as unconfined if Seccomp disabled
-	// https://github.com/kubernetes/kubernetes/blob/12d9183da03d86c65f9f17e3e28be3c7c18ed22a/pkg/kubelet/kuberuntime/kuberuntime_sandbox.go#L162-L163
-	if c.IsDisabled() {
-		if profilePath == k8sV1.SeccompProfileRuntimeDefault {
-			// running w/o seccomp, aka unconfined
-			specGenerator.Config.Linux.Seccomp = nil
-			return nil
-		}
-		if profilePath != k8sV1.SeccompProfileNameUnconfined {
-			return errors.New(
-				"seccomp is not enabled, cannot run with a profile",
-			)
-		}
-
-		log.Warnf(ctx, "Seccomp is not enabled in the kernel, running container without profile")
-	}
-
-	if profilePath == k8sV1.SeccompProfileNameUnconfined {
-		// running w/o seccomp, aka unconfined
-		specGenerator.Config.Linux.Seccomp = nil
-		return nil
-	}
-
-	// Load the default seccomp profile from the server if the profilePath is a
-	// default one
-	if profilePath == k8sV1.SeccompProfileRuntimeDefault || profilePath == k8sV1.DeprecatedSeccompProfileDockerDefault {
-		linuxSpecs, err := seccomp.LoadProfileFromConfig(
-			c.Profile(), specGenerator.Config,
-		)
-		if err != nil {
-			return errors.Wrap(err, "load default profile")
-		}
-
-		specGenerator.Config.Linux.Seccomp = linuxSpecs
-		return nil
-	}
-
-	// Load local seccomp profiles including their availability validation
-	if !strings.HasPrefix(profilePath, k8sV1.SeccompLocalhostProfileNamePrefix) {
-		return errors.Errorf("unknown seccomp profile path: %q", profilePath)
-	}
-
-	fname := strings.TrimPrefix(profilePath, k8sV1.SeccompLocalhostProfileNamePrefix)
-	file, err := os.ReadFile(filepath.FromSlash(fname))
-	if err != nil {
-		return errors.Errorf("cannot load seccomp profile %q: %v", fname, err)
-	}
-
-	linuxSpecs, err := seccomp.LoadProfileFromBytes(file, specGenerator.Config)
-	if err != nil {
-		return err
-	}
-	specGenerator.Config.Linux.Seccomp = linuxSpecs
-	return nil
-}
-
-func (c *Config) setupFromField(
-	ctx context.Context,
-	specGenerator *generate.Generator,
-	profileField *types.SecurityProfile,
-) error {
+) (*Notifier, string, error) {
+	ctx, span := log.StartSpan(ctx)
+	defer span.End()
 	log.Debugf(ctx, "Setup seccomp from profile field: %+v", profileField)
+
+	// Specifically set profile fields always have a higher priority than OCI artifact annotations
+	// TODO(sgrunert): allow merging OCI artifact profiles with security context ones.
+	if profileField == nil || profileField.ProfileType == types.SecurityProfile_Unconfined {
+		ociArtifactProfile, err := seccompociartifact.New().TryPull(ctx, sys, containerName, sandboxAnnotations, imageAnnotations)
+		if err != nil {
+			return nil, "", fmt.Errorf("try to pull OCI artifact seccomp profile: %w", err)
+		}
+
+		if ociArtifactProfile != nil {
+			notifier, err := c.applyProfileFromBytes(ctx, ociArtifactProfile, msgChan, containerID, sandboxAnnotations, specGenerator)
+			if err != nil {
+				return nil, "", fmt.Errorf("apply profile from bytes: %w", err)
+			}
+
+			return notifier, "", nil
+		}
+	}
+
+	// running w/o seccomp, aka unconfined
+	if profileField == nil {
+		specGenerator.Config.Linux.Seccomp = nil
+		return nil, "", nil
+	}
 
 	if c.IsDisabled() {
 		if profileField.ProfileType != types.SecurityProfile_Unconfined &&
 			// Kubernetes sandboxes run per default with `SecurityProfileTypeRuntimeDefault`:
 			// https://github.com/kubernetes/kubernetes/blob/629d5ab/pkg/kubelet/kuberuntime/kuberuntime_sandbox.go#L155-L162
 			profileField.ProfileType != types.SecurityProfile_RuntimeDefault {
-			return errors.Errorf(
+			return nil, "", errors.New(
 				"seccomp is not enabled, cannot run with custom profile",
 			)
 		}
 		log.Warnf(ctx, "Seccomp is not enabled, running without profile")
 		specGenerator.Config.Linux.Seccomp = nil
-		return nil
+		return nil, types.SecurityProfile_Unconfined.String(), nil
 	}
 
 	if profileField.ProfileType == types.SecurityProfile_Unconfined {
 		// running w/o seccomp, aka unconfined
 		specGenerator.Config.Linux.Seccomp = nil
-		return nil
+		return nil, types.SecurityProfile_Unconfined.String(), nil
 	}
 
 	if profileField.ProfileType == types.SecurityProfile_RuntimeDefault {
@@ -266,24 +290,52 @@ func (c *Config) setupFromField(
 			c.Profile(), specGenerator.Config,
 		)
 		if err != nil {
-			return errors.Wrap(err, "load default profile")
+			return nil, "", fmt.Errorf("load default profile: %w", err)
+		}
+		notifier, err := c.injectNotifier(ctx, msgChan, containerID, sandboxAnnotations, linuxSpecs)
+		if err != nil {
+			return nil, "", fmt.Errorf("inject notifier: %w", err)
 		}
 		specGenerator.Config.Linux.Seccomp = linuxSpecs
-		return nil
+		return notifier, types.SecurityProfile_RuntimeDefault.String(), nil
 	}
 
 	// Load local seccomp profiles including their availability validation
-	file, err := os.ReadFile(filepath.FromSlash(profileField.LocalhostRef))
+	localhostRef := filepath.FromSlash(profileField.LocalhostRef)
+	file, err := os.ReadFile(localhostRef)
 	if err != nil {
-		return errors.Wrapf(
-			err, "unable to load local profile %q", profileField.LocalhostRef,
+		return nil, "", fmt.Errorf(
+			"unable to load local profile %q: %w", localhostRef, err,
 		)
 	}
 
-	linuxSpecs, err := seccomp.LoadProfileFromBytes(file, specGenerator.Config)
+	notifier, err := c.applyProfileFromBytes(ctx, file, msgChan, containerID, sandboxAnnotations, specGenerator)
 	if err != nil {
-		return errors.Wrap(err, "load local profile")
+		return nil, "", fmt.Errorf("apply profile from bytes: %w", err)
 	}
+
+	return notifier, localhostRef, nil
+}
+
+// Setup can be used to setup the seccomp profile.
+func (c *Config) applyProfileFromBytes(
+	ctx context.Context,
+	fileBytes []byte,
+	msgChan chan Notification,
+	containerID string,
+	sandboxAnnotations map[string]string,
+	specGenerator *generate.Generator,
+) (*Notifier, error) {
+	linuxSpecs, err := seccomp.LoadProfileFromBytes(fileBytes, specGenerator.Config)
+	if err != nil {
+		return nil, fmt.Errorf("load local profile: %w", err)
+	}
+
+	notifier, err := c.injectNotifier(ctx, msgChan, containerID, sandboxAnnotations, linuxSpecs)
+	if err != nil {
+		return nil, fmt.Errorf("inject notifier: %w", err)
+	}
+
 	specGenerator.Config.Linux.Seccomp = linuxSpecs
-	return nil
+	return notifier, nil
 }

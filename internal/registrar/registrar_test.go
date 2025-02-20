@@ -3,19 +3,20 @@ package registrar_test
 import (
 	"testing"
 
-	"github.com/cri-o/cri-o/internal/registrar"
-	. "github.com/cri-o/cri-o/test/framework"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/cri-o/cri-o/internal/registrar"
+	. "github.com/cri-o/cri-o/test/framework"
 )
 
-// TestRegistrar runs the created specs
+// TestRegistrar runs the created specs.
 func TestRegistrar(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Registrar")
 }
 
-// nolint: gochecknoglobals
+//nolint:gochecknoglobals
 var t *TestFramework
 
 var _ = BeforeSuite(func() {
@@ -27,7 +28,7 @@ var _ = AfterSuite(func() {
 	t.Teardown()
 })
 
-// The actual test suite
+// The actual test suite.
 var _ = t.Describe("Registrar", func() {
 	// Constant test data needed by some tests
 	const (
@@ -43,7 +44,7 @@ var _ = t.Describe("Registrar", func() {
 	// each test
 	BeforeEach(func() {
 		sut = registrar.NewRegistrar()
-		Expect(sut.Reserve(testName, testKey)).To(BeNil())
+		Expect(sut.Reserve(testName, testKey)).To(Succeed())
 	})
 
 	t.Describe("Reserve", func() {
@@ -53,7 +54,7 @@ var _ = t.Describe("Registrar", func() {
 			err := sut.Reserve("name", "key")
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should succeed to reserve a registrar twice", func() {
@@ -62,7 +63,7 @@ var _ = t.Describe("Registrar", func() {
 			err := sut.Reserve(testName, testKey)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 
 		It("should fail to reserve an already reserved registrar", func() {
@@ -71,7 +72,7 @@ var _ = t.Describe("Registrar", func() {
 			err := sut.Reserve(testName, anotherKey)
 
 			// Then
-			Expect(err).NotTo(BeNil())
+			Expect(err).To(HaveOccurred())
 			Expect(err).To(Equal(registrar.ErrNameReserved))
 		})
 	})
@@ -100,7 +101,7 @@ var _ = t.Describe("Registrar", func() {
 			err := sut.Reserve(testName, testKey)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 
@@ -111,8 +112,8 @@ var _ = t.Describe("Registrar", func() {
 			names, err := sut.GetNames(testKey)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(len(names)).To(Equal(1))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(names).To(HaveLen(1))
 			Expect(names[0]).To(Equal(testName))
 		})
 
@@ -120,15 +121,15 @@ var _ = t.Describe("Registrar", func() {
 			// Given
 			testNames := []string{"test1", "test2"}
 			for _, name := range testNames {
-				Expect(sut.Reserve(name, anotherKey)).To(BeNil())
+				Expect(sut.Reserve(name, anotherKey)).To(Succeed())
 			}
 
 			// When
 			names, err := sut.GetNames(anotherKey)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(len(names)).To(Equal(2))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(names).To(HaveLen(2))
 			Expect(names).To(Equal(testNames))
 		})
 	})
@@ -140,8 +141,8 @@ var _ = t.Describe("Registrar", func() {
 			names, err := sut.GetNames(testKey)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(len(names)).To(Equal(1))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(names).To(HaveLen(1))
 			Expect(names[0]).To(Equal(testName))
 		})
 
@@ -150,15 +151,15 @@ var _ = t.Describe("Registrar", func() {
 			anotherKey := "anotherKey"
 			testNames := []string{"test1", "test2"}
 			for _, name := range testNames {
-				Expect(sut.Reserve(name, anotherKey)).To(BeNil())
+				Expect(sut.Reserve(name, anotherKey)).To(Succeed())
 			}
 
 			// When
 			names, err := sut.GetNames(anotherKey)
 
 			// Then
-			Expect(err).To(BeNil())
-			Expect(len(names)).To(Equal(2))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(names).To(HaveLen(2))
 			Expect(names).To(Equal(testNames))
 		})
 	})
@@ -171,7 +172,7 @@ var _ = t.Describe("Registrar", func() {
 
 			// Then
 			names, err := sut.GetNames(testKey)
-			Expect(len(names)).To(BeZero())
+			Expect(names).To(BeEmpty())
 			Expect(err).To(Equal(registrar.ErrNoSuchKey))
 		})
 	})
@@ -183,7 +184,7 @@ var _ = t.Describe("Registrar", func() {
 			key, err := sut.Get(testName)
 
 			// Then
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			Expect(key).To(Equal(testKey))
 		})
 
@@ -205,8 +206,8 @@ var _ = t.Describe("Registrar", func() {
 			names := sut.GetAll()
 
 			// Then
-			Expect(len(names)).To(Equal(1))
-			Expect(len(names[testKey])).To(Equal(1))
+			Expect(names).To(HaveLen(1))
+			Expect(names[testKey]).To(HaveLen(1))
 			Expect(names[testKey][0]).To(Equal(testName))
 		})
 	})
